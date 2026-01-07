@@ -42,7 +42,8 @@ DeleGate does NOT:
 - Call tools directly
 - Make API requests to external services
 - Read/write files or databases
-- Maintain session state between planning requests
+- Maintain principal session state between planning requests
+  (DeleGate IS stateful for worker registry and capability caching)
 - Track plan execution progress (InterView does this)
 - Retry failed plans (Principals decide)
 
@@ -94,6 +95,7 @@ A Plan is a structured JSON document with three sections:
 ─────────────────────────────────────────────────────────────────────────────
 
 {
+  "plan_schema_version": "DG-PLAN-0001",  // Plan schema version identifier
   "plan_id": "uuid-v4",                    // Unique plan identifier
   "delegate_id": "delegate-instance-1",    // DeleGate that created this
   "created_at": "2026-01-07T12:00:00Z",    // ISO 8601 timestamp
@@ -111,6 +113,32 @@ A Plan is a structured JSON document with three sections:
     "allow_cross_department": false
   }
 }
+
+PLAN VALIDATION RULES (Deterministic):
+
+Plans MUST satisfy these invariants to be considered valid:
+
+1. Schema Version
+   - plan_schema_version field MUST be present
+   - MUST match supported version (DG-PLAN-0001 for v0)
+
+2. Unique Step IDs
+   - All step_id values MUST be unique within the Plan
+   - Validation: Set(step_ids).length == steps.length
+
+3. Acyclic Dependencies
+   - Dependency graph MUST NOT contain cycles
+   - Validation: Topological sort must succeed
+   - A step cannot transitively depend on itself
+
+4. Valid Dependency References
+   - All step_ids in depends_on arrays MUST reference existing steps
+   - Cannot depend on steps defined later in the array (forward references allowed)
+
+5. Trust Policy Satisfiability
+   - All worker trust tiers MUST meet or exceed trust_policy.minimum_worker_tier
+   - If require_signatures=true, all workers MUST have valid signatures
+   - Validation failure = Plan rejection, not escalation
 
 ─────────────────────────────────────────────────────────────────────────────
 2. STEPS (Five Types)
@@ -134,7 +162,11 @@ Direct synchronous execution. Worker returns result immediately.
     "document_path": "/path/to/invoice.pdf",
     "language": "en"
   },
-  "trust_tier": "verified",
+  "trust": {
+    "declared_tier": "verified",
+    "verified_tier": "verified",
+    "verification_status": "pass"
+  },
   "depends_on": [],
   "output_binding": "extracted_text"
 }
@@ -151,7 +183,11 @@ Async execution via AsyncGate. Returns task_id, worker polls for lease.
     "image_pointer": "${step-001.output.image_path}"
   },
   "priority": "normal",
-  "trust_tier": "sandbox",
+  "trust": {
+    "declared_tier": "sandbox",
+    "verified_tier": "sandbox",
+    "verification_status": "pass"
+  },
   "depends_on": ["step-001"],
   "timeout_seconds": 300,
   "output_binding": "enhanced_image_task"
@@ -255,8 +291,14 @@ WORKER MANIFEST (provided by MCP server)
   "worker_id": "ocr-service-1",
   "worker_name": "OCR Document Processor",
   "version": "2.1.0",
-  "trust_tier": "verified",
-  "signature": "base64-encoded-signature",  // For verified/trusted tiers
+  "trust": {
+    "declared_tier": "verified",           // What worker claims
+    "verified_tier": "verified",           // What's actually been verified (null if not verified)
+    "verification_status": "pass",         // pass | fail | unknown
+    "signature": "base64-encoded-signature", // Cryptographic signature
+    "verified_at": "2026-01-07T10:00:00Z",
+    "verified_by": "security-team"
+  },
   "capabilities": [
     {
       "tool_name": "extract_text",
@@ -417,18 +459,44 @@ TRUST TIERS (increasing trust):
    - Unrestricted access within domain
    - Critical infrastructure tier
 
+TRUST DECLARATION vs VERIFICATION:
+
+Workers self-declare trust tier, but verification is separate:
+
+{
+  "trust": {
+    "declared_tier": "verified",           // What worker claims
+    "verified_tier": "sandbox",            // What's actually been verified (may be null)
+    "verification_status": "pass",         // pass | fail | unknown
+    "signature": "base64...",              // Cryptographic signature (if any)
+    "verified_at": "2026-01-07T10:00:00Z", // When verification occurred
+    "verified_by": "security-team"         // Who performed verification
+  }
+}
+
+IMPORTANT: During Phase 2 (Worker Discovery), verification may be honor system:
+- declared_tier present, verified_tier may be null
+- verification_status may be "unknown"
+- Principals MUST NOT assume declared_tier == verified_tier
+
+During Phase 4 (Production Hardening):
+- verified_tier MUST be populated for verified/trusted tiers
+- verification_status MUST be "pass" for production use
+- Cryptographic signatures enforced
+
 CRITICAL INVARIANT: Trust is NOT transitive.
 
 Principal trusting DeleGate ≠ auto-trusting all Workers that DeleGate uses.
 
 Flow:
-1. Workers self-declare trust tier in manifest
-2. DeleGates forward trust metadata in Plans (per-step trust tier + signature)
-3. Principal evaluates Plan based on trust policy BEFORE execution
-4. Principal can approve/reject/sandbox per-Worker
+1. Workers self-declare trust tier in manifest (declared_tier)
+2. DeleGate performs verification and sets verified_tier + verification_status
+3. DeleGate forwards complete trust metadata in Plans (per-step)
+4. Principal evaluates Plan based on verified_tier, NOT declared_tier
+5. Principal can approve/reject/sandbox per-Worker
 
 Cross-Department Delegation:
-- DeleGates themselves have trust tiers
+- DeleGates themselves have trust metadata (declared + verified)
 - Cross-department delegation visible in Plans
 - Principal policies control collaboration boundaries
 
@@ -461,27 +529,46 @@ WITH MEMORYGATE
 
 DeleGate uses MemoryGate for:
 
-1. Context Retrieval (input)
+1. Context Retrieval (MAY read)
    - Query relevant observations for planning context
    - Search for similar past plans
    - Retrieve domain-specific rules/constraints
 
-2. Plan Templates (input)
+2. Plan Templates (MAY read)
    - Store successful plan patterns as concepts
    - Reuse proven plan structures for similar intents
 
-3. Worker Manifests (persistent registry)
+3. Worker Manifests (MAY read, persistent registry)
    - Store worker manifests as documents
    - Index capabilities for semantic search
    - Track worker reliability metrics
 
-4. Planning History (audit trail)
-   - Store every Plan produced with intent hash
+4. Planning Receipts (MUST emit)
+   - DeleGate MUST emit `plan_created` receipt when Plan is produced
+   - DeleGate MAY emit `plan_escalated` receipt when escalation occurs
+   - DeleGate MUST NOT emit execution receipts (those come from Workers)
+   
+   Receipt structure:
+   {
+     "receipt_id": "uuid-v4",
+     "phase": "plan_created",  // or "plan_escalated"
+     "delegate_id": "delegate-instance-1",
+     "plan_id": "plan-001",
+     "created_at": "2026-01-07T12:00:00Z",
+     "metadata": {
+       "intent_hash": "sha256...",
+       "workers_considered": 12,
+       "confidence": 0.85
+     }
+   }
+
+5. Planning History (audit trail via receipts)
+   - Every Plan emission creates audit trail through receipts
    - Record which workers were selected and why
    - Enable pattern analysis of delegation strategies
 
 Principals promote Plan execution results to MemoryGate as observations.
-DeleGate does NOT write to MemoryGate during planning.
+DeleGate does NOT emit execution receipts—only planning receipts.
 
 ─────────────────────────────────────────────────────────────────────────────
 WITH INTERROGATE (OPTIONAL)
@@ -531,10 +618,11 @@ DeleGate MUST NOT:
    - Cannot hardcode worker dependencies
    - Must include fallback options in Plans
 
-6. Store Execution State
-   - No session persistence between planning requests
-   - Each /v1/plan call is stateless
-   - Cannot "remember" previous Plans unless via MemoryGate query
+6. Store Principal Session State
+   - No principal session persistence between planning requests
+   - Each /v1/plan call is stateless with respect to principal context
+   - Cannot "remember" previous Plans for a principal unless via MemoryGate query
+   - Worker registry and capability cache ARE stateful (maintained across requests)
 
 ═══════════════════════════════════════════════════════════════════════════════
 API SPECIFICATION (v0)
