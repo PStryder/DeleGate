@@ -1,0 +1,813 @@
+SPEC-DG-0000: DeleGate v0
+Task Delegation and Planning Framework
+Status: DRAFT
+Author: Technomancy Labs
+Date: 2026-01-07
+
+═══════════════════════════════════════════════════════════════════════════════
+EXECUTIVE SUMMARY
+═══════════════════════════════════════════════════════════════════════════════
+
+DeleGate is a pure planning component that decomposes high-level intent into 
+structured execution Plans. It brokers capability between principals (AI agents) 
+and self-describing workers (MCP servers), but DeleGate itself NEVER executes 
+work—it only produces Plans.
+
+CRITICAL INVARIANT: If output is not a valid Plan, DeleGate has failed.
+
+DeleGate maintains a live registry of available workers through introspection of 
+MCP tool manifests, matches capability to intent via semantic search, and 
+assembles Plans with explicit step types, dependencies, and trust metadata.
+
+Position in LegiVellum:
+- MemoryGate: Knowledge persistence and retrieval
+- AsyncGate: Execution envelope and work lifecycle  
+- DeleGate: Planning and capability brokering
+- CogniGate: Bounded AI execution context
+- Workers: Actual task execution (MCP servers)
+
+═══════════════════════════════════════════════════════════════════════════════
+CORE DOCTRINE
+═══════════════════════════════════════════════════════════════════════════════
+
+1. PURE PLANNER ARCHITECTURE
+
+DeleGate ONLY produces Plans. Everything else is error or escalation.
+
+Input:  Intent (natural language or structured) + Context (optional)
+Output: Plan (structured, validated) OR Escalation (cannot plan)
+
+DeleGate does NOT:
+- Execute any work itself
+- Call tools directly
+- Make API requests to external services
+- Read/write files or databases
+- Maintain session state between planning requests
+- Track plan execution progress (InterView does this)
+- Retry failed plans (Principals decide)
+
+2. SELF-DESCRIBING WORKER DISCOVERY
+
+Workers are NOT hardcoded types. Workers self-register by providing:
+- MCP tool manifest (JSON schema for each tool)
+- Capability descriptions (semantic tags, examples)
+- Performance hints (latency, cost, runtime estimates)
+- Trust tier (trusted, verified, sandbox, untrusted)
+- Availability status (ready, degraded, maintenance)
+
+DeleGate builds live registry through:
+- Periodic introspection of connected MCP servers
+- Semantic indexing of tool descriptions
+- Capability graph for dependency resolution
+- Trust tier validation and signature verification
+
+3. FRACTAL COMPOSITION
+
+DeleGates can delegate to other DeleGates using the same MCP contract.
+
+Essential invariant: All DeleGate-to-DeleGate communication uses the PUBLIC 
+MCP interface—no special internal protocols.
+
+This enables:
+- Arbitrary nesting depth (General → Department → Team → Specialist)
+- Swappable delegation nodes without breaking upstream callers
+- Independent domain scaling
+- Zero tight coupling between delegation tiers
+
+Parent DeleGate sees child DeleGate as just another worker exposing 
+delegation tools.
+
+═══════════════════════════════════════════════════════════════════════════════
+PLAN STRUCTURE (v0)
+═══════════════════════════════════════════════════════════════════════════════
+
+A Plan is a structured JSON document with three sections:
+
+{
+  "metadata": { ... },
+  "steps": [ ... ],
+  "references": { ... }
+}
+
+─────────────────────────────────────────────────────────────────────────────
+1. METADATA
+─────────────────────────────────────────────────────────────────────────────
+
+{
+  "plan_id": "uuid-v4",                    // Unique plan identifier
+  "delegate_id": "delegate-instance-1",    // DeleGate that created this
+  "created_at": "2026-01-07T12:00:00Z",    // ISO 8601 timestamp
+  "intent_summary": "Process invoice...",  // Human-readable intent
+  "scope": "single_task",                  // single_task | workflow | campaign
+  "confidence": 0.85,                      // 0.0-1.0, plan quality estimate
+  "estimated_cost_units": 150,             // Resource estimate (optional)
+  "assumptions": [                          // Explicit planning assumptions
+    "Invoice format is PDF",
+    "OCR worker is available"
+  ],
+  "trust_policy": {                        // Trust requirements
+    "minimum_worker_tier": "verified",     // trusted | verified | sandbox | untrusted
+    "require_signatures": true,
+    "allow_cross_department": false
+  }
+}
+
+─────────────────────────────────────────────────────────────────────────────
+2. STEPS (Five Types)
+─────────────────────────────────────────────────────────────────────────────
+
+Each step has:
+- step_id (unique within plan)
+- step_type (one of five types below)
+- depends_on (array of step_ids that must complete first)
+- timeout_seconds (optional, for queue_execution and wait_for)
+
+STEP TYPE 1: call_worker
+Direct synchronous execution. Worker returns result immediately.
+
+{
+  "step_id": "step-001",
+  "step_type": "call_worker",
+  "worker_id": "ocr-service-1",
+  "tool_name": "extract_text",
+  "parameters": {
+    "document_path": "/path/to/invoice.pdf",
+    "language": "en"
+  },
+  "trust_tier": "verified",
+  "depends_on": [],
+  "output_binding": "extracted_text"
+}
+
+STEP TYPE 2: queue_execution
+Async execution via AsyncGate. Returns task_id, worker polls for lease.
+
+{
+  "step_id": "step-002", 
+  "step_type": "queue_execution",
+  "worker_id": "image-processor-2",
+  "tool_name": "enhance_quality",
+  "parameters": {
+    "image_pointer": "${step-001.output.image_path}"
+  },
+  "priority": "normal",
+  "trust_tier": "sandbox",
+  "depends_on": ["step-001"],
+  "timeout_seconds": 300,
+  "output_binding": "enhanced_image_task"
+}
+
+STEP TYPE 3: wait_for
+Block until specified receipts/tasks reach completion phase.
+
+{
+  "step_id": "step-003",
+  "step_type": "wait_for",
+  "wait_conditions": [
+    {
+      "type": "task_completion",
+      "task_id": "${step-002.output.task_id}",
+      "acceptable_phases": ["complete", "escalate"]
+    }
+  ],
+  "depends_on": ["step-002"],
+  "timeout_seconds": 600,
+  "output_binding": "wait_result"
+}
+
+STEP TYPE 4: aggregate
+Request synthesis by upstream principal. Collect outputs and ask for summary.
+
+{
+  "step_id": "step-004",
+  "step_type": "aggregate",
+  "inputs": [
+    "${step-001.output}",
+    "${step-003.output}"
+  ],
+  "aggregation_instruction": "Summarize extracted text and image analysis",
+  "depends_on": ["step-001", "step-003"],
+  "output_binding": "summary"
+}
+
+STEP TYPE 5: escalate
+Cannot proceed—deliver report and request decision from principal.
+
+{
+  "step_id": "step-005",
+  "step_type": "escalate",
+  "reason": "ambiguous_intent",
+  "message": "Invoice contains multiple currencies. Which should be used?",
+  "context": {
+    "currencies_found": ["USD", "EUR"],
+    "confidence_scores": [0.6, 0.4]
+  },
+  "suggested_options": [
+    "Use USD (higher confidence)",
+    "Request clarification from user",
+    "Process both and flag for review"
+  ],
+  "depends_on": ["step-001"]
+}
+
+─────────────────────────────────────────────────────────────────────────────
+3. REFERENCES
+─────────────────────────────────────────────────────────────────────────────
+
+{
+  "input_sources": [
+    {
+      "type": "memorygate_observation",
+      "observation_id": 42,
+      "relevance": "invoice processing rules"
+    },
+    {
+      "type": "asyncgate_task",
+      "task_id": "task-previous-invoice",
+      "relevance": "similar document processed yesterday"
+    }
+  ],
+  "expected_outputs": [
+    {
+      "type": "asyncgate_task_id",
+      "step_id": "step-002",
+      "description": "Enhanced image task pointer"
+    },
+    {
+      "type": "memorygate_promotion",
+      "step_id": "step-004",
+      "description": "Invoice summary for knowledge base"
+    }
+  ]
+}
+
+═══════════════════════════════════════════════════════════════════════════════
+WORKER REGISTRY
+═══════════════════════════════════════════════════════════════════════════════
+
+DeleGate maintains live registry of available workers through MCP introspection.
+
+─────────────────────────────────────────────────────────────────────────────
+WORKER MANIFEST (provided by MCP server)
+─────────────────────────────────────────────────────────────────────────────
+
+{
+  "worker_id": "ocr-service-1",
+  "worker_name": "OCR Document Processor",
+  "version": "2.1.0",
+  "trust_tier": "verified",
+  "signature": "base64-encoded-signature",  // For verified/trusted tiers
+  "capabilities": [
+    {
+      "tool_name": "extract_text",
+      "description": "Extract text from scanned documents using OCR",
+      "semantic_tags": ["document", "ocr", "text-extraction", "pdf", "image"],
+      "input_schema": { ... },  // JSON Schema
+      "output_schema": { ... },
+      "performance_hints": {
+        "typical_latency_ms": 2000,
+        "cost_units": 10,
+        "max_runtime_seconds": 30
+      }
+    }
+  ],
+  "availability": {
+    "status": "ready",  // ready | degraded | maintenance | offline
+    "current_load": 0.3,  // 0.0-1.0
+    "max_concurrent": 5
+  },
+  "constraints": [
+    "Requires file size < 10MB",
+    "Supports PDF, PNG, JPEG formats only"
+  ]
+}
+
+─────────────────────────────────────────────────────────────────────────────
+REGISTRY OPERATIONS
+─────────────────────────────────────────────────────────────────────────────
+
+1. Worker Registration
+   POST /v1/workers/register
+   Body: Worker manifest
+   Returns: Registration receipt with worker_id
+
+2. Worker Discovery  
+   GET /v1/workers/search?query=<semantic-search>&trust_tier=<min-tier>
+   Returns: List of matching workers with relevance scores
+
+3. Capability Matching
+   POST /v1/workers/match
+   Body: { "intent": "Extract text from invoice", "constraints": {...} }
+   Returns: Ranked list of workers that can fulfill intent
+
+4. Worker Status
+   GET /v1/workers/{worker_id}/status
+   Returns: Current availability, load, health metrics
+
+═══════════════════════════════════════════════════════════════════════════════
+PLANNING WORKFLOW
+═══════════════════════════════════════════════════════════════════════════════
+
+Principal (AI agent) sends intent to DeleGate → DeleGate produces Plan → 
+Principal evaluates Plan → Principal executes Plan steps → Principal stores 
+results in MemoryGate.
+
+─────────────────────────────────────────────────────────────────────────────
+REQUEST ENVELOPE
+─────────────────────────────────────────────────────────────────────────────
+
+POST /v1/plan
+
+{
+  "intent": {
+    "type": "natural_language",  // or "structured_task"
+    "content": "Process this invoice and extract payment details",
+    "urgency": "normal"  // low | normal | high | critical
+  },
+  "context": {
+    "memorygate_refs": [42, 87],  // Observation IDs for relevant context
+    "asyncgate_task_refs": ["task-123"],  // Related tasks
+    "user_constraints": [
+      "Must complete within 5 minutes",
+      "Use only verified workers"
+    ]
+  },
+  "planning_options": {
+    "max_steps": 10,
+    "allow_escalation": true,
+    "prefer_sync": false,  // Prefer async via AsyncGate when possible
+    "trust_policy": {
+      "minimum_tier": "verified",
+      "require_signatures": true
+    }
+  }
+}
+
+─────────────────────────────────────────────────────────────────────────────
+RESPONSE ENVELOPE
+─────────────────────────────────────────────────────────────────────────────
+
+SUCCESS (200 OK):
+{
+  "status": "plan_created",
+  "plan": { ... },  // Full Plan structure as defined above
+  "planning_metadata": {
+    "workers_considered": 12,
+    "planning_duration_ms": 450,
+    "confidence": 0.85,
+    "warnings": [
+      "Step 2 worker has degraded availability"
+    ]
+  }
+}
+
+ESCALATION (200 OK with escalation):
+{
+  "status": "requires_escalation",
+  "reason": "ambiguous_intent",
+  "message": "Cannot determine which OCR model to use—invoice is low quality",
+  "suggested_actions": [
+    "Enhance image first then retry",
+    "Use premium OCR service (higher cost)",
+    "Request manual review"
+  ],
+  "context": { ... }
+}
+
+ERROR (400/500):
+{
+  "status": "planning_failed",
+  "error_code": "NO_CAPABLE_WORKERS",
+  "message": "No workers available that can extract text from encrypted PDFs",
+  "suggestions": [
+    "Register a PDF decryption worker",
+    "Decrypt document before processing"
+  ]
+}
+
+═══════════════════════════════════════════════════════════════════════════════
+TRUST MODEL
+═══════════════════════════════════════════════════════════════════════════════
+
+TRUST TIERS (increasing trust):
+
+1. UNTRUSTED (tier=0)
+   - No verification
+   - Manual approval required for each execution
+   - Full audit logging
+   - Sandboxed execution (network/filesystem isolation)
+
+2. SANDBOX (tier=1)  
+   - Basic identity verification
+   - Isolated execution environment
+   - Limited resource access
+   - Automated approval for low-risk tasks
+
+3. VERIFIED (tier=2)
+   - Code audit completed
+   - Signed manifest with valid signature
+   - Organization-approved
+   - Standard resource access
+   - Regular security reviews
+
+4. TRUSTED (tier=3)
+   - Signed by root authority
+   - Full audit trail
+   - Production-grade reliability
+   - Unrestricted access within domain
+   - Critical infrastructure tier
+
+CRITICAL INVARIANT: Trust is NOT transitive.
+
+Principal trusting DeleGate ≠ auto-trusting all Workers that DeleGate uses.
+
+Flow:
+1. Workers self-declare trust tier in manifest
+2. DeleGates forward trust metadata in Plans (per-step trust tier + signature)
+3. Principal evaluates Plan based on trust policy BEFORE execution
+4. Principal can approve/reject/sandbox per-Worker
+
+Cross-Department Delegation:
+- DeleGates themselves have trust tiers
+- Cross-department delegation visible in Plans
+- Principal policies control collaboration boundaries
+
+═══════════════════════════════════════════════════════════════════════════════
+INTEGRATION POINTS
+═══════════════════════════════════════════════════════════════════════════════
+
+─────────────────────────────────────────────────────────────────────────────
+WITH ASYNCGATE
+─────────────────────────────────────────────────────────────────────────────
+
+DeleGate uses AsyncGate for async step execution via queue_execution steps.
+
+When DeleGate includes queue_execution step in Plan:
+1. Principal calls AsyncGate.queue_task() with:
+   - worker_id from Plan step
+   - tool_name and parameters from Plan step  
+   - priority from Plan step
+   - Returns task_id
+
+2. Worker polls AsyncGate for lease using worker_id
+3. Worker executes, emits result pointer
+4. Worker calls complete() with receipt
+
+DeleGate NEVER calls AsyncGate directly—only Principals execute Plans.
+
+─────────────────────────────────────────────────────────────────────────────
+WITH MEMORYGATE
+─────────────────────────────────────────────────────────────────────────────
+
+DeleGate uses MemoryGate for:
+
+1. Context Retrieval (input)
+   - Query relevant observations for planning context
+   - Search for similar past plans
+   - Retrieve domain-specific rules/constraints
+
+2. Plan Templates (input)
+   - Store successful plan patterns as concepts
+   - Reuse proven plan structures for similar intents
+
+3. Worker Manifests (persistent registry)
+   - Store worker manifests as documents
+   - Index capabilities for semantic search
+   - Track worker reliability metrics
+
+4. Planning History (audit trail)
+   - Store every Plan produced with intent hash
+   - Record which workers were selected and why
+   - Enable pattern analysis of delegation strategies
+
+Principals promote Plan execution results to MemoryGate as observations.
+DeleGate does NOT write to MemoryGate during planning.
+
+─────────────────────────────────────────────────────────────────────────────
+WITH INTERROGATE (OPTIONAL)
+─────────────────────────────────────────────────────────────────────────────
+
+If InterroGate is in topology, Plans can flow through it for admission control:
+
+Principal → DeleGate (produces Plan) → InterroGate (validates) → Execution
+
+InterroGate checks Plans for:
+- Recursion depth limits (prevent runaway delegation)
+- Budget exhaustion (cost_units tracking)
+- Policy violations (trust tier requirements)
+- Capability repeats (avoid loops)
+
+═══════════════════════════════════════════════════════════════════════════════
+ARCHITECTURAL BOUNDARIES (HARD PROHIBITIONS)
+═══════════════════════════════════════════════════════════════════════════════
+
+DeleGate MUST NOT:
+
+1. Execute Work Directly
+   - No direct tool calls to workers
+   - No API requests to external services
+   - No file I/O or database operations
+   - Output is ONLY structured Plans
+
+2. Track Execution Progress
+   - No monitoring of Plan execution state
+   - No retry logic for failed steps
+   - No completion detection
+   - InterView provides this visibility
+
+3. Mutate Plans After Creation
+   - Plans are immutable once returned
+   - Cannot "fix" a failed Plan
+   - Must create new Plan if intent changes
+
+4. Make Decisions for Principal
+   - Cannot auto-approve Plans
+   - Cannot select among equivalent valid Plans without escalation
+   - Cannot override user constraints
+   - Escalate ambiguity instead
+
+5. Assume Worker Availability
+   - Must handle worker degradation gracefully
+   - Cannot hardcode worker dependencies
+   - Must include fallback options in Plans
+
+6. Store Execution State
+   - No session persistence between planning requests
+   - Each /v1/plan call is stateless
+   - Cannot "remember" previous Plans unless via MemoryGate query
+
+═══════════════════════════════════════════════════════════════════════════════
+API SPECIFICATION (v0)
+═══════════════════════════════════════════════════════════════════════════════
+
+Base URL: http://delegate-host:8000
+
+─────────────────────────────────────────────────────────────────────────────
+HEALTH & INFO
+─────────────────────────────────────────────────────────────────────────────
+
+GET /health
+Returns: { "status": "healthy", "version": "0.1.0" }
+
+GET /
+Returns: Service info and capabilities
+
+─────────────────────────────────────────────────────────────────────────────
+PLANNING
+─────────────────────────────────────────────────────────────────────────────
+
+POST /v1/plan
+Body: Request envelope (see PLANNING WORKFLOW section)
+Returns: Plan or Escalation
+
+POST /v1/plan/validate
+Body: { "plan": {...} }
+Returns: Validation result (schema check, dependency graph, trust tier validation)
+
+─────────────────────────────────────────────────────────────────────────────
+WORKER REGISTRY
+─────────────────────────────────────────────────────────────────────────────
+
+POST /v1/workers/register
+Body: Worker manifest
+Returns: { "worker_id": "...", "status": "registered" }
+
+GET /v1/workers/search?query=<text>&trust_tier=<min-tier>&limit=10
+Returns: Ranked list of workers matching query
+
+POST /v1/workers/match
+Body: { "intent": "...", "constraints": {...} }
+Returns: Ranked list with relevance scores and capability match details
+
+GET /v1/workers/{worker_id}/status
+Returns: Worker health, availability, current load
+
+DELETE /v1/workers/{worker_id}
+Unregister worker (admin only)
+
+─────────────────────────────────────────────────────────────────────────────
+ADMIN
+─────────────────────────────────────────────────────────────────────────────
+
+GET /v1/stats
+Returns: Planning statistics, worker count, success rates
+
+POST /v1/cache/clear
+Clear capability matching cache
+
+═══════════════════════════════════════════════════════════════════════════════
+IMPLEMENTATION PHASES
+═══════════════════════════════════════════════════════════════════════════════
+
+PHASE 1: MVP (Core Planning)
+- Accept intent, produce Plans with 5 step types
+- Manual worker registration (hardcoded initially)
+- Basic capability matching via string search
+- Schema validation for Plans
+- Integration with AsyncGate for queue_execution steps
+
+PHASE 2: Worker Discovery
+- MCP server introspection for manifests
+- Live worker registry with status tracking
+- Semantic search for capability matching
+- Trust tier validation (honor system, logging only)
+
+PHASE 3: Advanced Planning
+- Plan templates from MemoryGate
+- Multi-step dependency resolution
+- Cost estimation and optimization
+- Escalation decision trees
+
+PHASE 4: Production Hardening
+- Cryptographic signatures for verified/trusted workers
+- Sandboxing enforcement (network/filesystem isolation)
+- Trust policy evaluation engine
+- Cross-department delegation controls
+- Full audit trail in MemoryGate
+
+═══════════════════════════════════════════════════════════════════════════════
+EXAMPLE FLOWS
+═══════════════════════════════════════════════════════════════════════════════
+
+─────────────────────────────────────────────────────────────────────────────
+EXAMPLE 1: Simple Synchronous Task
+─────────────────────────────────────────────────────────────────────────────
+
+Intent: "Extract text from invoice.pdf"
+
+DeleGate produces Plan:
+{
+  "metadata": {
+    "plan_id": "plan-001",
+    "scope": "single_task",
+    "confidence": 0.95
+  },
+  "steps": [
+    {
+      "step_id": "step-001",
+      "step_type": "call_worker",
+      "worker_id": "ocr-service-1",
+      "tool_name": "extract_text",
+      "parameters": { "document_path": "/path/to/invoice.pdf" },
+      "output_binding": "extracted_text"
+    }
+  ]
+}
+
+Principal executes:
+1. Calls ocr-service-1.extract_text() directly (MCP call)
+2. Receives result with text content
+3. Stores result in MemoryGate as observation
+
+─────────────────────────────────────────────────────────────────────────────
+EXAMPLE 2: Async with Aggregation
+─────────────────────────────────────────────────────────────────────────────
+
+Intent: "Analyze invoice quality and extract payment details"
+
+DeleGate produces Plan:
+{
+  "steps": [
+    {
+      "step_id": "step-001",
+      "step_type": "queue_execution",
+      "worker_id": "image-analyzer",
+      "tool_name": "assess_quality",
+      "output_binding": "quality_report"
+    },
+    {
+      "step_id": "step-002",
+      "step_type": "queue_execution",
+      "worker_id": "ocr-service-1",
+      "tool_name": "extract_payment_details",
+      "output_binding": "payment_data"
+    },
+    {
+      "step_id": "step-003",
+      "step_type": "wait_for",
+      "wait_conditions": [
+        { "task_id": "${step-001.task_id}" },
+        { "task_id": "${step-002.task_id}" }
+      ]
+    },
+    {
+      "step_id": "step-004",
+      "step_type": "aggregate",
+      "inputs": ["${step-001.output}", "${step-002.output}"],
+      "aggregation_instruction": "Summarize quality and payment data"
+    }
+  ]
+}
+
+Principal executes:
+1. Calls AsyncGate.queue_task() for step-001 → task_id_1
+2. Calls AsyncGate.queue_task() for step-002 → task_id_2
+3. Polls AsyncGate receipts until both complete
+4. Synthesizes aggregate summary
+5. Stores in MemoryGate
+
+─────────────────────────────────────────────────────────────────────────────
+EXAMPLE 3: Escalation Due to Ambiguity
+─────────────────────────────────────────────────────────────────────────────
+
+Intent: "Process document for approval"
+
+DeleGate cannot determine document type (invoice vs contract vs form).
+
+DeleGate produces Escalation:
+{
+  "status": "requires_escalation",
+  "reason": "ambiguous_intent",
+  "message": "Cannot identify document type from intent alone",
+  "suggested_actions": [
+    "Specify document type explicitly",
+    "Upload document for analysis first",
+    "Use generic document processor"
+  ],
+  "context": {
+    "possible_document_types": ["invoice", "contract", "tax_form"],
+    "workers_available": [
+      { "worker": "invoice-processor", "confidence": 0.3 },
+      { "worker": "contract-analyzer", "confidence": 0.3 },
+      { "worker": "form-parser", "confidence": 0.2 }
+    ]
+  }
+}
+
+Principal handles escalation by requesting clarification from user or 
+attempting classification first.
+
+═══════════════════════════════════════════════════════════════════════════════
+CONFIGURATION
+═══════════════════════════════════════════════════════════════════════════════
+
+Environment variables (prefix DELEGATE_):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| HOST | 0.0.0.0 | Server bind address |
+| PORT | 8000 | Server port |
+| DEBUG | false | Enable debug logging |
+| INSTANCE_ID | delegate-1 | Instance identifier |
+| MEMORYGATE_URL | - | MemoryGate for context/templates |
+| MAX_PLAN_STEPS | 20 | Maximum steps per Plan |
+| CAPABILITY_CACHE_TTL_SECONDS | 600 | Worker capability cache TTL |
+| PLANNING_TIMEOUT_SECONDS | 30 | Max time for Plan generation |
+| DEFAULT_TRUST_TIER | verified | Minimum tier if not specified |
+| ALLOW_UNTRUSTED_WORKERS | false | Enable untrusted worker registration |
+
+═══════════════════════════════════════════════════════════════════════════════
+TESTING STRATEGY
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Unit Tests
+   - Plan schema validation
+   - Dependency graph resolution
+   - Step type generation logic
+   - Trust tier evaluation
+
+2. Integration Tests
+   - Mock worker registration
+   - Capability matching accuracy
+   - AsyncGate integration (queue_execution steps)
+   - MemoryGate context retrieval
+
+3. Contract Tests
+   - Principal-DeleGate interface stability
+   - DeleGate-Worker MCP contract compliance
+   - Fractal delegation (DeleGate-to-DeleGate)
+
+4. Property-Based Tests
+   - All Plans must be valid JSON
+   - Dependency graphs must be acyclic
+   - Step IDs must be unique within Plan
+   - Trust tier requirements must be satisfiable
+
+═══════════════════════════════════════════════════════════════════════════════
+OBSERVABILITY
+═══════════════════════════════════════════════════════════════════════════════
+
+DeleGate emits structured logs for:
+- Planning requests (intent hash, context size, constraints)
+- Worker selection (candidates considered, match scores, selection rationale)
+- Plan generation (step count, estimated cost, confidence)
+- Escalations (reason code, suggested actions)
+- Errors (validation failures, timeout, no capable workers)
+
+Metrics to track:
+- Plans created per minute
+- Average planning duration
+- Escalation rate
+- Worker selection distribution
+- Trust tier usage breakdown
+
+Audit trail (stored in MemoryGate):
+- Every Plan with full provenance (intent → workers considered → Plan created)
+- Enables: pattern analysis, capability gap identification, worker reliability
+
+═══════════════════════════════════════════════════════════════════════════════
+LICENSE
+═══════════════════════════════════════════════════════════════════════════════
+
+Proprietary - Technomancy Labs
+All Rights Reserved
