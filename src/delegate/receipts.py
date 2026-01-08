@@ -15,7 +15,7 @@ import httpx
 import ulid
 
 from delegate.models import Plan, PlanRequest
-from delegate.config import get_memorygate_url
+from delegate.config import get_memorygate_url, get_memorygate_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,13 @@ _retry_worker_running = False
 class ReceiptEmissionError(Exception):
     """Receipt emission failed after retries"""
     pass
+
+
+def _memorygate_headers() -> dict[str, str]:
+    api_key = get_memorygate_api_key()
+    if not api_key:
+        raise ReceiptEmissionError("MemoryGate API key not configured")
+    return {"X-API-Key": api_key}
 
 
 async def emit_plan_receipt(
@@ -177,6 +184,7 @@ async def emit_receipt_with_retry(
     Failed receipts are queued for background retry.
     """
     receipt_id = receipt_data["receipt_id"]
+    headers = _memorygate_headers()
 
     for attempt in range(max_retries):
         try:
@@ -184,7 +192,7 @@ async def emit_receipt_with_retry(
                 response = await client.post(
                     f"{memorygate_url}/receipts",
                     json=receipt_data,
-                    headers={"X-API-Key": f"dev-key-{tenant_id}"},
+                    headers=headers,
                     timeout=timeout,
                 )
                 response.raise_for_status()
@@ -287,6 +295,11 @@ async def retry_worker(interval_seconds: int = 60):
 
             if not _retry_queue:
                 continue
+            try:
+                headers = _memorygate_headers()
+            except ReceiptEmissionError as e:
+                logger.error(str(e))
+                continue
 
             logger.info(f"Processing {len(_retry_queue)} queued receipts")
 
@@ -303,7 +316,7 @@ async def retry_worker(interval_seconds: int = 60):
                         response = await client.post(
                             f"{item['memorygate_url']}/receipts",
                             json=item["receipt_data"],
-                            headers={"X-API-Key": f"dev-key-{item['tenant_id']}"},
+                            headers=headers,
                             timeout=10.0,
                         )
                         response.raise_for_status()

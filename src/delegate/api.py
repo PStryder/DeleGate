@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
@@ -27,6 +27,7 @@ from delegate.models import (
     WorkerMatchResponse,
     WorkerStatusResponse,
     TrustTier,
+    HealthResponse,
 )
 from delegate.planner import Planner, validate_plan
 from delegate.registry import get_registry, WorkerRegistry
@@ -34,15 +35,26 @@ from delegate.database import get_session_dependency
 from delegate.receipts import emit_plan_receipt, emit_escalation_receipt, get_retry_queue_size
 from delegate.config import get_settings
 from delegate.auth import verify_api_key
+from delegate.middleware import get_rate_limiter
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_api_key), Depends(rate_limit_dependency)])
 
 
 # =============================================================================
 # Dependencies
 # =============================================================================
+
+async def rate_limit_dependency(request: Request) -> None:
+    """Rate limiting dependency."""
+    settings = get_settings()
+    limiter = get_rate_limiter(
+        calls_per_minute=settings.rate_limit_requests_per_minute,
+        enabled=settings.rate_limit_enabled
+    )
+    await limiter.check_request(request)
+
 
 def get_planner() -> Planner:
     """Get planner instance"""
@@ -58,10 +70,16 @@ def get_tenant_id() -> str:
 # Health Endpoints
 # =============================================================================
 
-@router.get("/health")
+@router.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "version": "0.1.0"}
+    settings = get_settings()
+    return HealthResponse(
+        status="healthy",
+        service="DeleGate",
+        version="0.1.0",
+        instance_id=settings.instance_id
+    )
 
 
 @router.get("/")

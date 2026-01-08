@@ -85,6 +85,18 @@ class WaitConditionType(str, Enum):
 
 
 # =============================================================================
+# Health & Service Models
+# =============================================================================
+
+class HealthResponse(BaseModel):
+    """Standard health check response"""
+    status: str
+    service: str = "DeleGate"
+    version: str
+    instance_id: str
+
+
+# =============================================================================
 # Trust Models
 # =============================================================================
 
