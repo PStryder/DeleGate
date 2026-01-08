@@ -6,10 +6,47 @@ DeleGate is a task delegation framework that decomposes high-level intent into s
 
 ## Status
 
-**Specification:** v0 (DRAFT)  
-**Implementation:** Not yet started
+**Specification:** v0 (DRAFT)
+**Implementation:** Phase 1 MVP (Initial Draft)
 
 See: `SPEC-DG-0000.txt` for complete specification.
+
+## Quick Start
+
+```bash
+# Install dependencies
+pip install -e ".[dev]"
+
+# Set environment variables
+export DELEGATE_DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/delegate"
+export DELEGATE_MEMORYGATE_URL="http://localhost:8001"
+export DELEGATE_ASYNCGATE_URL="http://localhost:8002"
+
+# Run database migrations
+alembic upgrade head
+
+# Start the server
+python -m delegate.main
+
+# Or run as MCP server
+python -m delegate.mcp_server
+```
+
+## Project Structure
+
+```
+src/delegate/
+├── __init__.py      # Package exports
+├── models.py        # Pydantic models (Plan, Steps, Workers, Trust)
+├── config.py        # Configuration via environment
+├── database.py      # PostgreSQL async connection
+├── registry.py      # Worker registry with capability matching
+├── planner.py       # Plan generation logic
+├── receipts.py      # MemoryGate receipt emission
+├── api.py           # FastAPI REST endpoints
+├── mcp_server.py    # MCP server interface
+└── main.py          # Application entry point
+```
 
 ## Core Doctrine
 
@@ -35,24 +72,10 @@ DeleGate maintains a live registry of available workers through MCP introspectio
 - Trust tier validation (trusted, verified, sandbox, untrusted)
 - Performance hints (latency, cost, availability)
 
-## Fractal Composition
-
-DeleGates can delegate to other DeleGates using the same MCP contract.
-
-**Essential invariant:** All DeleGate-to-DeleGate communication uses the PUBLIC MCP interface—no special internal protocols.
-
-This enables arbitrary nesting (General → Department → Team → Specialist) without tight coupling.
-
-## Integration Points
-
-- **AsyncGate:** Used for async step execution via queue_execution steps
-- **MemoryGate:** Context retrieval, plan templates, worker registry persistence
-- **InterroGate:** Optional admission control for recursion limits and policy checks
-
 ## Five Step Types
 
 1. **call_worker** - Direct synchronous execution
-2. **queue_execution** - Async execution via AsyncGate  
+2. **queue_execution** - Async execution via AsyncGate
 3. **wait_for** - Block until receipts/tasks complete
 4. **aggregate** - Request synthesis by principal
 5. **escalate** - Cannot proceed, deliver report and request decision
@@ -67,29 +90,29 @@ Trust tiers:
 - **Sandbox** (tier 1): Isolated execution, limited resources
 - **Untrusted** (tier 0): Manual approval, full audit
 
-## API Endpoints (Planned)
+## API Endpoints
 
 - `POST /v1/plan` - Create plan from intent
 - `POST /v1/plan/validate` - Validate plan structure
+- `GET /v1/plan/{plan_id}` - Get plan by ID
 - `POST /v1/workers/register` - Register worker with manifest
 - `GET /v1/workers/search` - Semantic capability search
 - `POST /v1/workers/match` - Match workers to intent
+- `GET /v1/stats` - Registry and planning statistics
 
-## Non-Goals (Hard Prohibitions)
+## MCP Tools
 
-DeleGate MUST NOT:
-- Execute any work directly
-- Track Plan execution progress
-- Mutate Plans after creation
-- Make decisions for principals
-- Store execution state between requests
+- `create_delegation_plan` - Create plan from intent
+- `analyze_intent` - Analyze intent without creating plan
+- `register_worker` - Register worker with capabilities
+- `search_workers` - Search workers by capability
+- `list_workers` - List all registered workers
 
-## Implementation Phases
+## Testing
 
-1. **MVP** - Core planning with 5 step types, basic worker registry
-2. **Worker Discovery** - MCP introspection, semantic search, trust validation
-3. **Advanced Planning** - Plan templates, cost optimization, dependency resolution
-4. **Production Hardening** - Signatures, sandboxing, audit trail
+```bash
+pytest tests/ -v
+```
 
 ## License
 
