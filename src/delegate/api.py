@@ -33,6 +33,7 @@ from delegate.registry import get_registry, WorkerRegistry
 from delegate.database import get_session_dependency
 from delegate.receipts import emit_plan_receipt, emit_escalation_receipt, get_retry_queue_size
 from delegate.config import get_settings
+from delegate.auth import verify_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ async def service_info():
 # Planning Endpoints
 # =============================================================================
 
-@router.post("/v1/plan", response_model=PlanResponse, status_code=status.HTTP_200_OK)
+@router.post("/v1/plan", response_model=PlanResponse, status_code=status.HTTP_200_OK, dependencies=[Depends(verify_api_key)])
 async def create_plan(
     request: PlanRequest,
     planner: Planner = Depends(get_planner),
@@ -168,7 +169,7 @@ async def create_plan(
     return response
 
 
-@router.post("/v1/plan/validate", response_model=ValidatePlanResponse)
+@router.post("/v1/plan/validate", response_model=ValidatePlanResponse, dependencies=[Depends(verify_api_key)])
 async def validate_plan_endpoint(request: ValidatePlanRequest):
     """
     Validate a plan structure.
@@ -195,7 +196,7 @@ async def validate_plan_endpoint(request: ValidatePlanRequest):
         )
 
 
-@router.get("/v1/plan/{plan_id}")
+@router.get("/v1/plan/{plan_id}", dependencies=[Depends(verify_api_key)])
 async def get_plan(
     plan_id: str,
     tenant_id: str = Depends(get_tenant_id),
@@ -222,7 +223,7 @@ async def get_plan(
     return _row_to_plan_dict(row)
 
 
-@router.get("/v1/plans")
+@router.get("/v1/plans", dependencies=[Depends(verify_api_key)])
 async def list_plans(
     limit: int = Query(default=20, ge=1, le=100),
     status_filter: Optional[str] = Query(default=None, alias="status"),
@@ -262,7 +263,8 @@ async def list_plans(
 @router.post(
     "/v1/workers/register",
     response_model=WorkerRegisterResponse,
-    status_code=status.HTTP_201_CREATED
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(verify_api_key)]
 )
 async def register_worker(
     manifest: WorkerManifest,
@@ -291,7 +293,7 @@ async def register_worker(
         )
 
 
-@router.get("/v1/workers/search", response_model=WorkerSearchResponse)
+@router.get("/v1/workers/search", response_model=WorkerSearchResponse, dependencies=[Depends(verify_api_key)])
 async def search_workers(
     query: str,
     trust_tier: Optional[str] = None,
@@ -321,7 +323,7 @@ async def search_workers(
     )
 
 
-@router.post("/v1/workers/match", response_model=WorkerMatchResponse)
+@router.post("/v1/workers/match", response_model=WorkerMatchResponse, dependencies=[Depends(verify_api_key)])
 async def match_workers(
     request: WorkerMatchRequest,
     registry: WorkerRegistry = Depends(get_registry),
@@ -343,7 +345,7 @@ async def match_workers(
     )
 
 
-@router.get("/v1/workers/{worker_id}/status", response_model=WorkerStatusResponse)
+@router.get("/v1/workers/{worker_id}/status", response_model=WorkerStatusResponse, dependencies=[Depends(verify_api_key)])
 async def get_worker_status(
     worker_id: str,
     registry: WorkerRegistry = Depends(get_registry),
@@ -366,7 +368,7 @@ async def get_worker_status(
     )
 
 
-@router.get("/v1/workers")
+@router.get("/v1/workers", dependencies=[Depends(verify_api_key)])
 async def list_workers(
     registry: WorkerRegistry = Depends(get_registry),
 ):
@@ -390,7 +392,7 @@ async def list_workers(
     }
 
 
-@router.delete("/v1/workers/{worker_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/v1/workers/{worker_id}", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(verify_api_key)])
 async def unregister_worker(
     worker_id: str,
     registry: WorkerRegistry = Depends(get_registry),
@@ -409,7 +411,7 @@ async def unregister_worker(
 # Admin Endpoints
 # =============================================================================
 
-@router.get("/v1/stats")
+@router.get("/v1/stats", dependencies=[Depends(verify_api_key)])
 async def get_stats(
     registry: WorkerRegistry = Depends(get_registry),
     session: AsyncSession = Depends(get_session_dependency),
@@ -436,7 +438,7 @@ async def get_stats(
     }
 
 
-@router.post("/v1/cache/clear", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/v1/cache/clear", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(verify_api_key)])
 async def clear_cache():
     """Clear capability matching cache (placeholder)"""
     # In production, this would clear any capability caches
