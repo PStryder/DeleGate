@@ -1,13 +1,15 @@
 """
 DeleGate Receipt Emission
 
-Receipt emission with retry logic for MemoryGate integration.
+Receipt emission with retry logic for ReceiptGate integration.
 Per SPEC-DG-0000, DeleGate MUST emit plan_created receipts.
 """
 import asyncio
 import json
 import logging
+import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 from collections import deque
 
@@ -15,10 +17,22 @@ import httpx
 import ulid
 
 from delegate.models import Plan, PlanRequest
-from delegate.config import get_memorygate_url, get_memorygate_api_key
+from delegate.config import get_receiptgate_url, get_receiptgate_api_key
 
 logger = logging.getLogger(__name__)
 
+try:
+    from legivellum.models import Receipt as CanonicalReceipt
+except ImportError:
+    shared_root = Path(__file__).resolve().parents[4] / "LegiVellum" / "shared"
+    if shared_root.exists():
+        sys.path.append(str(shared_root))
+        try:
+            from legivellum.models import Receipt as CanonicalReceipt
+        except ImportError:
+            CanonicalReceipt = None
+    else:
+        CanonicalReceipt = None
 
 # In-memory retry queue (production: use Redis or database)
 _retry_queue: deque = deque(maxlen=1000)
@@ -30,32 +44,76 @@ class ReceiptEmissionError(Exception):
     pass
 
 
-def _memorygate_headers() -> dict[str, str]:
-    api_key = get_memorygate_api_key()
+def _receiptgate_headers() -> dict[str, str]:
+    api_key = get_receiptgate_api_key()
     if not api_key:
-        raise ReceiptEmissionError("MemoryGate API key not configured")
-    return {"X-API-Key": api_key}
+        raise ReceiptEmissionError("ReceiptGate API key not configured")
+    return {"Authorization": f"Bearer {api_key}"}
+
+
+def _normalize_mcp_endpoint(endpoint: str) -> str:
+    normalized = endpoint.rstrip("/")
+    if not normalized.endswith("/mcp"):
+        normalized = f"{normalized}/mcp"
+    return normalized
 
 
 async def emit_plan_receipt(
     tenant_id: str,
-    plan: Plan,
     request: PlanRequest,
     created_at: datetime,
+    plan: Plan | None = None,
+    plan_id: str | None = None,
+    phase: str = "accepted",
+    status: str = "NA",
+    receipt_id: str | None = None,
+    caused_by_receipt_id: str = "NA",
+    artifact_pointer: str | None = None,
 ) -> str:
     """
-    Emit a plan_created receipt to MemoryGate.
+    Emit a plan receipt to ReceiptGate (accepted or complete).
 
     Per SPEC-DG-0000: DeleGate MUST emit plan_created receipt when Plan is produced.
     """
-    receipt_id = str(ulid.new())
+    resolved_plan_id = plan.metadata.plan_id if plan else plan_id
+    if not resolved_plan_id:
+        raise ValueError("plan_id is required to emit plan receipt")
+
+    intent_summary = plan.metadata.intent_summary if plan else request.intent.content
+    task_summary = f"Plan: {intent_summary[:100]}"
+
+    plan_steps = len(plan.steps) if plan else None
+    plan_confidence = plan.metadata.confidence if plan else None
+    plan_scope = plan.metadata.scope.value if plan else None
+
+    outcome_kind = "NA"
+    outcome_text = "NA"
+    artifact_location = "NA"
+    artifact_pointer_value = "NA"
+    artifact_checksum = "NA"
+    artifact_size_bytes = 0
+    artifact_mime = "NA"
+    completed_at = None
+
+    if phase == "complete":
+        outcome_kind = "artifact_pointer"
+        outcome_text = "plan_stored"
+        artifact_location = "delegate.plans"
+        artifact_pointer_value = artifact_pointer or f"delegate://plans/{resolved_plan_id}"
+        artifact_mime = "application/json"
+        completed_at = created_at.isoformat()
+        if status == "NA":
+            status = "success"
+
+    receipt_id = receipt_id or str(ulid.new())
 
     receipt_data = {
         "schema_version": "1.0",
+        "tenant_id": tenant_id,
         "receipt_id": receipt_id,
-        "task_id": plan.metadata.plan_id,
+        "task_id": resolved_plan_id,
         "parent_task_id": "NA",
-        "caused_by_receipt_id": "NA",
+        "caused_by_receipt_id": caused_by_receipt_id,
         "dedupe_key": "NA",
         "attempt": 0,
         "from_principal": "delegate",
@@ -63,16 +121,16 @@ async def emit_plan_receipt(
         "source_system": "delegate",
         "recipient_ai": "delegate",
         "trust_domain": "default",
-        "phase": "accepted",
-        "status": "NA",
+        "phase": phase,
+        "status": status,
         "realtime": False,
         "task_type": "plan.create",
-        "task_summary": f"Plan created: {plan.metadata.intent_summary[:100]}",
+        "task_summary": task_summary,
         "task_body": json.dumps({
             "intent": request.intent.content,
-            "steps": len(plan.steps),
-            "confidence": plan.metadata.confidence,
-            "scope": plan.metadata.scope.value,
+            "steps": plan_steps,
+            "confidence": plan_confidence,
+            "scope": plan_scope,
         }),
         "inputs": {
             "memorygate_refs": request.context.memorygate_refs,
@@ -80,29 +138,33 @@ async def emit_plan_receipt(
         },
         "expected_outcome_kind": "artifact_pointer",
         "expected_artifact_mime": "application/json",
-        "outcome_kind": "NA",
-        "outcome_text": "NA",
-        "artifact_location": "NA",
-        "artifact_pointer": "NA",
-        "artifact_checksum": "NA",
-        "artifact_size_bytes": 0,
-        "artifact_mime": "NA",
+        "outcome_kind": outcome_kind,
+        "outcome_text": outcome_text,
+        "artifact_location": artifact_location,
+        "artifact_pointer": artifact_pointer_value,
+        "artifact_checksum": artifact_checksum,
+        "artifact_size_bytes": artifact_size_bytes,
+        "artifact_mime": artifact_mime,
         "escalation_class": "NA",
         "escalation_reason": "NA",
         "escalation_to": "NA",
         "retry_requested": False,
         "created_at": created_at.isoformat(),
+        "completed_at": completed_at,
         "metadata": {
-            "plan_id": plan.metadata.plan_id,
-            "delegate_id": plan.metadata.delegate_id,
+            "plan_id": resolved_plan_id,
+            "delegate_id": plan.metadata.delegate_id if plan else "delegate",
             "workers_used": list(set(
                 s.worker_id for s in plan.steps if s.worker_id
-            )),
+            )) if plan else [],
         },
     }
 
+    if CanonicalReceipt is not None:
+        receipt_data = CanonicalReceipt.model_validate(receipt_data).model_dump(mode="json")
+
     return await emit_receipt_with_retry(
-        memorygate_url=get_memorygate_url(),
+        receiptgate_url=get_receiptgate_url(),
         tenant_id=tenant_id,
         receipt_data=receipt_data,
     )
@@ -116,7 +178,7 @@ async def emit_escalation_receipt(
     created_at: datetime,
 ) -> str:
     """
-    Emit a plan_escalated receipt to MemoryGate.
+    Emit a plan_escalated receipt to ReceiptGate.
 
     Per SPEC-DG-0000: DeleGate MAY emit plan_escalated receipt when escalation occurs.
     """
@@ -124,6 +186,7 @@ async def emit_escalation_receipt(
 
     receipt_data = {
         "schema_version": "1.0",
+        "tenant_id": tenant_id,
         "receipt_id": receipt_id,
         "task_id": f"escalation-{receipt_id}",
         "parent_task_id": "NA",
@@ -163,78 +226,77 @@ async def emit_escalation_receipt(
         "metadata": {"reason_code": reason},
     }
 
+    if CanonicalReceipt is not None:
+        receipt_data = CanonicalReceipt.model_validate(receipt_data).model_dump(mode="json")
+
     return await emit_receipt_with_retry(
-        memorygate_url=get_memorygate_url(),
+        receiptgate_url=get_receiptgate_url(),
         tenant_id=tenant_id,
         receipt_data=receipt_data,
     )
 
 
 async def emit_receipt_with_retry(
-    memorygate_url: str,
+    receiptgate_url: str,
     tenant_id: str,
     receipt_data: dict,
     max_retries: int = 3,
     timeout: float = 10.0,
 ) -> str:
     """
-    Emit receipt to MemoryGate with retry logic.
+    Emit receipt to ReceiptGate with retry logic.
 
     Raises ReceiptEmissionError if all retries fail.
     Failed receipts are queued for background retry.
     """
     receipt_id = receipt_data["receipt_id"]
-    headers = _memorygate_headers()
+    headers = _receiptgate_headers()
+    endpoint = _normalize_mcp_endpoint(receiptgate_url)
 
     for attempt in range(max_retries):
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{memorygate_url}/receipts",
-                    json=receipt_data,
+                    endpoint,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": receipt_id,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "receiptgate.submit_receipt",
+                            "arguments": {"receipt": receipt_data},
+                        },
+                    },
                     headers=headers,
                     timeout=timeout,
                 )
                 response.raise_for_status()
+                data = response.json()
+                if data.get("error"):
+                    code = data["error"].get("code")
+                    if code == "validation_failed":
+                        raise ReceiptEmissionError(f"Receipt validation failed: {data['error']}")
+                    raise ReceiptEmissionError(f"ReceiptGate error: {data['error']}")
 
             logger.info(
-                f"Receipt emitted successfully",
+                "Receipt emitted successfully",
                 extra={
                     "receipt_id": receipt_id,
                     "phase": receipt_data["phase"],
                     "task_id": receipt_data["task_id"],
                     "attempt": attempt + 1,
-                }
+                },
             )
             return receipt_id
 
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 409:
-                # Duplicate - already stored, treat as success
-                logger.warning(
-                    f"Receipt already exists (duplicate)",
-                    extra={"receipt_id": receipt_id}
-                )
-                return receipt_id
-            elif e.response.status_code in (400, 422):
-                # Validation error - don't retry
-                logger.error(
-                    f"Receipt validation failed",
-                    extra={
-                        "receipt_id": receipt_id,
-                        "status_code": e.response.status_code,
-                        "error": e.response.text,
-                    }
-                )
-                raise ReceiptEmissionError(f"Receipt validation failed: {e.response.text}")
-            else:
-                logger.warning(
-                    f"Receipt emission attempt {attempt + 1} failed",
-                    extra={
-                        "receipt_id": receipt_id,
-                        "status_code": e.response.status_code,
-                    }
-                )
+            logger.warning(
+                f"Receipt emission attempt {attempt + 1} failed",
+                extra={
+                    "receipt_id": receipt_id,
+                    "status_code": e.response.status_code,
+                },
+            )
 
         except (httpx.ConnectError, httpx.TimeoutException) as e:
             logger.warning(
@@ -252,17 +314,17 @@ async def emit_receipt_with_retry(
             await asyncio.sleep(2 ** attempt)  # Exponential backoff
 
     # All retries failed - queue for background retry
-    _queue_for_retry(memorygate_url, tenant_id, receipt_data)
+    _queue_for_retry(receiptgate_url, tenant_id, receipt_data)
 
     raise ReceiptEmissionError(
         f"Failed to emit receipt {receipt_id} after {max_retries} attempts. Queued for retry."
     )
 
 
-def _queue_for_retry(memorygate_url: str, tenant_id: str, receipt_data: dict):
+def _queue_for_retry(receiptgate_url: str, tenant_id: str, receipt_data: dict):
     """Queue failed receipt for background retry"""
     _retry_queue.append({
-        "memorygate_url": memorygate_url,
+        "receiptgate_url": receiptgate_url,
         "tenant_id": tenant_id,
         "receipt_data": receipt_data,
         "queued_at": datetime.utcnow().isoformat(),
@@ -296,7 +358,7 @@ async def retry_worker(interval_seconds: int = 60):
             if not _retry_queue:
                 continue
             try:
-                headers = _memorygate_headers()
+                headers = _receiptgate_headers()
             except ReceiptEmissionError as e:
                 logger.error(str(e))
                 continue
@@ -312,14 +374,26 @@ async def retry_worker(interval_seconds: int = 60):
                 item["retry_count"] += 1
 
                 try:
+                    endpoint = _normalize_mcp_endpoint(item["receiptgate_url"])
                     async with httpx.AsyncClient() as client:
                         response = await client.post(
-                            f"{item['memorygate_url']}/receipts",
-                            json=item["receipt_data"],
+                            endpoint,
+                            json={
+                                "jsonrpc": "2.0",
+                                "id": item["receipt_data"]["receipt_id"],
+                                "method": "tools/call",
+                                "params": {
+                                    "name": "receiptgate.submit_receipt",
+                                    "arguments": {"receipt": item["receipt_data"]},
+                                },
+                            },
                             headers=headers,
                             timeout=10.0,
                         )
                         response.raise_for_status()
+                        data = response.json()
+                        if data.get("error"):
+                            raise ReceiptEmissionError(f"ReceiptGate error: {data['error']}")
 
                     logger.info(
                         f"Queued receipt successfully emitted",
@@ -330,8 +404,8 @@ async def retry_worker(interval_seconds: int = 60):
                     )
 
                 except Exception as e:
-                    if item["retry_count"] < 10:
-                        _retry_queue.append(item)
+                        if item["retry_count"] < 10:
+                            _retry_queue.append(item)
                         logger.warning(
                             f"Retry failed, re-queued",
                             extra={

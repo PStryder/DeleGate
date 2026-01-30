@@ -28,6 +28,7 @@ from delegate.models import (
     WorkerStatusResponse,
     TrustTier,
     HealthResponse,
+    generate_plan_id,
 )
 from delegate.planner import Planner, validate_plan
 from delegate.registry import get_registry, WorkerRegistry
@@ -121,12 +122,30 @@ async def create_plan(
     - Input: Intent (natural language or structured) + Context (optional)
     - Output: Plan (structured, validated) OR Escalation (cannot plan)
     """
+    accepted_receipt_id: str | None = None
+    plan_id = generate_plan_id()
+    accepted_at = datetime.utcnow()
+
+    # Emit accepted receipt when planning starts
+    try:
+        accepted_receipt_id = await emit_plan_receipt(
+            tenant_id=tenant_id,
+            request=request,
+            created_at=accepted_at,
+            plan_id=plan_id,
+            phase="accepted",
+            status="NA",
+        )
+    except Exception as e:
+        logger.warning(f"Failed to emit accepted plan receipt: {e}")
+
     response = await planner.create_plan(request)
     created_at = datetime.utcnow()
 
     # Store plan if created
     if response.status == "plan_created" and response.plan:
         plan = response.plan
+        plan.metadata.plan_id = plan_id
 
         try:
             insert_sql = text("""
@@ -167,6 +186,10 @@ async def create_plan(
                 plan=plan,
                 request=request,
                 created_at=created_at,
+                phase="complete",
+                status="success",
+                caused_by_receipt_id=accepted_receipt_id or "NA",
+                artifact_pointer=f"delegate://plans/{plan_id}",
             )
         except Exception as e:
             logger.warning(f"Failed to emit plan receipt: {e}")

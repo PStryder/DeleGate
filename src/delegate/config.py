@@ -42,17 +42,21 @@ class Settings(BaseSettings):
     sql_echo: bool = Field(default=False, description="Echo SQL queries")
 
     # Integration URLs
-    memorygate_url: str = Field(
-        default="http://localhost:8001",
-        description="MemoryGate URL for context/templates/receipts"
+    receiptgate_url: str = Field(
+        default="http://localhost:8003",
+        description="ReceiptGate MCP endpoint for receipt emission"
     )
-    memorygate_api_key: str = Field(
+    receiptgate_api_key: str = Field(
         default="",
-        description="MemoryGate API key for receipt emission"
+        description="ReceiptGate API key for receipt emission"
+    )
+    memorygate_url: str = Field(
+        default="",
+        description="Deprecated: MemoryGate URL (use receiptgate_url)",
     )
     asyncgate_url: str = Field(
         default="http://localhost:8002",
-        description="AsyncGate URL for async task execution"
+        description="AsyncGate MCP endpoint for async task execution"
     )
 
     # Planning limits
@@ -160,7 +164,7 @@ class Settings(BaseSettings):
             raise ValueError(f"Port must be between 1 and 65535, got {v}")
         return v
 
-    @field_validator("memorygate_url", "asyncgate_url")
+    @field_validator("receiptgate_url", "asyncgate_url", "memorygate_url")
     @classmethod
     def validate_integration_url(cls, v: str) -> str:
         """Validate integration URLs are HTTP(S)."""
@@ -191,14 +195,16 @@ def get_database_url() -> str:
     return get_settings().database_url
 
 
-def get_memorygate_url() -> str:
-    """Get MemoryGate URL from settings"""
-    return get_settings().memorygate_url
+def get_receiptgate_url() -> str:
+    """Get ReceiptGate URL from settings"""
+    settings = get_settings()
+    return settings.receiptgate_url or settings.memorygate_url
 
 
-def get_memorygate_api_key() -> str:
-    """Get MemoryGate API key from settings"""
-    return get_settings().memorygate_api_key
+def get_receiptgate_api_key() -> str:
+    """Get ReceiptGate API key from settings"""
+    settings = get_settings()
+    return settings.receiptgate_api_key
 
 
 def get_asyncgate_url() -> str:

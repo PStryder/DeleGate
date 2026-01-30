@@ -28,6 +28,7 @@ from delegate.models import (
     TrustPolicy,
     PerformanceHints,
     WorkerAvailabilityInfo,
+    generate_plan_id,
 )
 from delegate.planner import Planner
 from delegate.registry import get_registry, init_registry
@@ -104,6 +105,23 @@ async def create_delegation_plan(
         ),
     )
 
+    accepted_receipt_id: str | None = None
+    plan_id = generate_plan_id()
+    accepted_at = datetime.utcnow()
+
+    # Emit accepted receipt when planning starts
+    try:
+        accepted_receipt_id = await emit_plan_receipt(
+            tenant_id=settings.default_tenant_id,
+            request=request,
+            created_at=accepted_at,
+            plan_id=plan_id,
+            phase="accepted",
+            status="NA",
+        )
+    except Exception as e:
+        logger.warning(f"Failed to emit accepted plan receipt: {e}")
+
     # Create planner and generate plan
     planner = Planner()
     response = await planner.create_plan(request)
@@ -111,12 +129,17 @@ async def create_delegation_plan(
 
     # Emit receipt if plan was created
     if response.status == "plan_created" and response.plan:
+        response.plan.metadata.plan_id = plan_id
         try:
             await emit_plan_receipt(
                 tenant_id=settings.default_tenant_id,
                 plan=response.plan,
                 request=request,
                 created_at=created_at,
+                phase="complete",
+                status="success",
+                caused_by_receipt_id=accepted_receipt_id or "NA",
+                artifact_pointer=f"delegate://plans/{plan_id}",
             )
         except Exception as e:
             logger.warning(f"Failed to emit plan receipt: {e}")
