@@ -375,7 +375,7 @@ async def delegate_bootstrap() -> dict[str, Any]:
             "max_plan_steps": settings.max_plan_steps,
             "planning_timeout_seconds": settings.planning_timeout_seconds,
             "default_trust_tier": settings.default_trust_tier,
-            "memorygate_url": settings.memorygate_url,
+            "receiptgate_url": settings.receiptgate_url or settings.memorygate_url,
             "asyncgate_url": settings.asyncgate_url,
         },
         "registry_stats": stats,

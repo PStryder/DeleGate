@@ -150,7 +150,11 @@ async def emit_plan_receipt(
         "escalation_to": "NA",
         "retry_requested": False,
         "created_at": created_at.isoformat(),
+        "stored_at": None,
+        "started_at": None,
         "completed_at": completed_at,
+        "read_at": None,
+        "archived_at": None,
         "metadata": {
             "plan_id": resolved_plan_id,
             "delegate_id": plan.metadata.delegate_id if plan else "delegate",
@@ -223,6 +227,11 @@ async def emit_escalation_receipt(
         "escalation_to": "principal",
         "retry_requested": False,
         "created_at": created_at.isoformat(),
+        "stored_at": None,
+        "started_at": None,
+        "completed_at": None,
+        "read_at": None,
+        "archived_at": None,
         "metadata": {"reason_code": reason},
     }
 
@@ -404,19 +413,19 @@ async def retry_worker(interval_seconds: int = 60):
                     )
 
                 except Exception as e:
-                        if item["retry_count"] < 10:
-                            _retry_queue.append(item)
+                    if item["retry_count"] < 10:
+                        _retry_queue.append(item)
                         logger.warning(
                             f"Retry failed, re-queued",
                             extra={
                                 "receipt_id": item["receipt_data"]["receipt_id"],
                                 "retry_count": item["retry_count"],
-                            }
+                            },
                         )
                     else:
                         logger.error(
                             f"Giving up on receipt after 10 retries",
-                            extra={"receipt_id": item["receipt_data"]["receipt_id"]}
+                            extra={"receipt_id": item["receipt_data"]["receipt_id"]},
                         )
 
         except Exception as e:

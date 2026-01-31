@@ -42,6 +42,17 @@ class WorkerRegistry:
         self._lock = asyncio.Lock()
         self._cache_ttl = get_settings().capability_cache_ttl_seconds
 
+    async def clear_cache(self) -> None:
+        """Clear and rebuild in-memory indexes.
+
+        Phase 1 registry is in-memory only, so this refreshes derived indexes.
+        """
+        async with self._lock:
+            self._capability_index.clear()
+            self._tag_index.clear()
+            for manifest in self._workers.values():
+                self._add_to_indexes(manifest)
+
     async def register(self, manifest: WorkerManifest) -> WorkerManifest:
         """
         Register a worker with the registry.

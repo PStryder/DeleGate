@@ -19,7 +19,9 @@ pip install -e ".[dev]"
 
 # Set environment variables
 export DELEGATE_DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/delegate"
-export DELEGATE_MEMORYGATE_URL="http://localhost:8001"
+export DELEGATE_RECEIPTGATE_URL="http://localhost:8003"
+export DELEGATE_RECEIPTGATE_API_KEY="dg_your-secret-api-key-here"
+export DELEGATE_MEMORYGATE_URL="http://localhost:8001"  # deprecated
 export DELEGATE_ASYNCGATE_URL="http://localhost:8002"
 
 # Run database migrations
@@ -42,9 +44,10 @@ src/delegate/
 ├── database.py      # PostgreSQL async connection
 ├── registry.py      # Worker registry with capability matching
 ├── planner.py       # Plan generation logic
-├── receipts.py      # MemoryGate receipt emission
+├── receipts.py      # ReceiptGate receipt emission
 ├── api.py           # FastAPI REST endpoints
-├── mcp_server.py    # MCP server interface
+├── mcp_http.py      # MCP HTTP JSON-RPC interface
+├── mcp_server.py    # MCP server interface (stdio)
 └── main.py          # Application entry point
 ```
 
@@ -92,6 +95,7 @@ Trust tiers:
 
 ## API Endpoints
 
+- `GET /health` - Health check
 - `POST /v1/plan` - Create plan from intent
 - `POST /v1/plan/validate` - Validate plan structure
 - `GET /v1/plan/{plan_id}` - Get plan by ID
@@ -107,6 +111,12 @@ Trust tiers:
 - `register_worker` - Register worker with capabilities
 - `search_workers` - Search workers by capability
 - `list_workers` - List all registered workers
+
+## MCP HTTP (JSON-RPC)
+
+DeleGate exposes MCP over HTTP at `/mcp` with JSON-RPC methods:
+- `tools/list`
+- `tools/call`
 
 ## Testing
 

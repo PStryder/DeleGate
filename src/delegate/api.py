@@ -40,8 +40,6 @@ from delegate.middleware import get_rate_limiter
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(dependencies=[Depends(verify_api_key), Depends(rate_limit_dependency)])
-
 
 # =============================================================================
 # Dependencies
@@ -65,6 +63,9 @@ def get_planner() -> Planner:
 def get_tenant_id() -> str:
     """Get tenant ID (placeholder for auth integration)"""
     return get_settings().default_tenant_id
+
+
+router = APIRouter(dependencies=[Depends(verify_api_key), Depends(rate_limit_dependency)])
 
 
 # =============================================================================
@@ -480,10 +481,11 @@ async def get_stats(
 
 
 @router.post("/v1/cache/clear", status_code=status.HTTP_204_NO_CONTENT, dependencies=[Depends(verify_api_key)])
-async def clear_cache():
-    """Clear capability matching cache (placeholder)"""
-    # In production, this would clear any capability caches
-    pass
+async def clear_cache(
+    registry: WorkerRegistry = Depends(get_registry),
+):
+    """Clear capability matching cache."""
+    await registry.clear_cache()
 
 
 # =============================================================================
