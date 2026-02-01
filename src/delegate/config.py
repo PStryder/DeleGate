@@ -128,13 +128,13 @@ class Settings(BaseSettings):
     )
 
     # Authentication
-    api_key: str = Field(
-        default="",
-        description="API key for REST endpoint authentication"
-    )
     allow_insecure_dev: bool = Field(
         default=False,
         description="Allow unauthenticated access (dev only)"
+    )
+    api_key: str = Field(
+        default="",
+        description="API key for REST endpoint authentication"
     )
 
     # Multi-tenancy

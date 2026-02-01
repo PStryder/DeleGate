@@ -1,9 +1,13 @@
 """
 Pytest configuration and fixtures for DeleGate tests.
 """
-import pytest
 import asyncio
+import os
+import pytest
 from typing import AsyncGenerator
+
+# Ensure auth is disabled for test runs.
+os.environ.setdefault("DELEGATE_ALLOW_INSECURE_DEV", "true")
 
 # Configure pytest-asyncio
 pytest_plugins = ('pytest_asyncio',)

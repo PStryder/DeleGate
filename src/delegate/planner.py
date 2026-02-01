@@ -87,6 +87,9 @@ def detect_task_type(intent: str) -> str:
     """Detect primary task type from intent"""
     intent_lower = intent.lower()
 
+    if re.search(r"ocr|extract\s+text|scan", intent_lower):
+        return "document.ocr"
+
     for pattern, task_type in INTENT_PATTERNS.items():
         if re.search(pattern, intent_lower):
             return task_type
