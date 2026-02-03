@@ -11,7 +11,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from delegate.api import router as api_router
 from delegate.mcp_http import router as mcp_router
 from delegate.database import init_database, close_database
 from delegate.registry import init_registry
@@ -84,9 +83,6 @@ def create_app() -> FastAPI:
         allow_methods=settings.cors_allowed_methods,
         allow_headers=settings.cors_allowed_headers,
     )
-
-    # Include REST API routes
-    app.include_router(api_router)
 
     # Include MCP routes
     app.include_router(mcp_router)

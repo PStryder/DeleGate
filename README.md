@@ -30,25 +30,21 @@ alembic upgrade head
 # Start the server
 python -m delegate.main
 
-# Or run as MCP server
-python -m delegate.mcp_server
 ```
 
 ## Project Structure
 
 ```
 src/delegate/
-├── __init__.py      # Package exports
-├── models.py        # Pydantic models (Plan, Steps, Workers, Trust)
-├── config.py        # Configuration via environment
-├── database.py      # PostgreSQL async connection
-├── registry.py      # Worker registry with capability matching
-├── planner.py       # Plan generation logic
-├── receipts.py      # ReceiptGate receipt emission
-├── api.py           # FastAPI REST endpoints
-├── mcp_http.py      # MCP HTTP JSON-RPC interface
-├── mcp_server.py    # MCP server interface (stdio)
-└── main.py          # Application entry point
+- __init__.py      # Package exports
+- models.py        # Pydantic models (Plan, Steps, Workers, Trust)
+- config.py        # Configuration via environment
+- database.py      # PostgreSQL async connection
+- registry.py      # Worker registry with capability matching
+- planner.py       # Plan generation logic
+- receipts.py      # ReceiptGate receipt emission
+- mcp_http.py      # MCP HTTP JSON-RPC interface
+- main.py          # Application entry point
 ```
 
 ## Core Doctrine
@@ -92,17 +88,6 @@ Trust tiers:
 - **Verified** (tier 2): Code audit, organization-approved
 - **Sandbox** (tier 1): Isolated execution, limited resources
 - **Untrusted** (tier 0): Manual approval, full audit
-
-## API Endpoints
-
-- `GET /health` - Health check
-- `POST /v1/plan` - Create plan from intent
-- `POST /v1/plan/validate` - Validate plan structure
-- `GET /v1/plan/{plan_id}` - Get plan by ID
-- `POST /v1/workers/register` - Register worker with manifest
-- `GET /v1/workers/search` - Semantic capability search
-- `POST /v1/workers/match` - Match workers to intent
-- `GET /v1/stats` - Registry and planning statistics
 
 ## MCP Tools
 
