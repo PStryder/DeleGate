@@ -1,3 +1,5 @@
+> LEGACY NOTE (2026-02-03): DeleGate is MCP-only. REST endpoint references are historical.
+
 # DeleGate Code Review Report
 
 **Review Date:** 2026-01-08

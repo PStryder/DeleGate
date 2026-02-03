@@ -1,8 +1,8 @@
 """
-DeleGate REST API
+DeleGate REST API (LEGACY, not mounted).
 
 FastAPI routes for plan creation and worker registry.
-Per SPEC-DG-0000 API Specification.
+Per SPEC-DG-0000 API Specification. MCP-only deployments should use /mcp tools.
 """
 import json
 import logging

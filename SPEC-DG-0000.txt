@@ -1,3 +1,5 @@
+LEGACY NOTE (2026-02-03): DeleGate is MCP-only. REST endpoint references in this spec are historical.
+
 SPEC-DG-0000: DeleGate v0
 Task Delegation and Planning Framework
 Status: DRAFT
