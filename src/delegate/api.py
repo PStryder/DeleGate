@@ -147,6 +147,7 @@ async def create_plan(
     if response.status == "plan_created" and response.plan:
         plan = response.plan
         plan.metadata.plan_id = plan_id
+        plan_stored = False
 
         try:
             insert_sql = text("""
@@ -176,24 +177,28 @@ async def create_plan(
                 "status": "created",
             })
             await session.commit()
+            plan_stored = True
         except Exception as e:
             logger.warning(f"Failed to store plan: {e}")
             # Continue even if storage fails
 
-        # Emit plan_created receipt
-        try:
-            await emit_plan_receipt(
-                tenant_id=tenant_id,
-                plan=plan,
-                request=request,
-                created_at=created_at,
-                phase="complete",
-                status="success",
-                caused_by_receipt_id=accepted_receipt_id or "NA",
-                artifact_pointer=f"delegate://plans/{plan_id}",
-            )
-        except Exception as e:
-            logger.warning(f"Failed to emit plan receipt: {e}")
+        if plan_stored:
+            # Emit plan_created receipt
+            try:
+                await emit_plan_receipt(
+                    tenant_id=tenant_id,
+                    plan=plan,
+                    request=request,
+                    created_at=created_at,
+                    phase="complete",
+                    status="success",
+                    caused_by_receipt_id=accepted_receipt_id or "NA",
+                    artifact_pointer=f"delegate://plans/{plan_id}",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to emit plan receipt: {e}")
+        else:
+            logger.warning("Plan not stored; skipping completion receipt", extra={"plan_id": plan_id})
 
     elif response.status == "requires_escalation":
         # Emit escalation receipt

@@ -69,6 +69,7 @@ async def emit_plan_receipt(
     receipt_id: str | None = None,
     caused_by_receipt_id: str = "NA",
     artifact_pointer: str | None = None,
+    artifact_refs: list[dict[str, Any]] | None = None,
 ) -> str:
     """
     Emit a plan receipt to ReceiptGate (accepted or complete).
@@ -106,6 +107,18 @@ async def emit_plan_receipt(
             status = "success"
 
     receipt_id = receipt_id or str(ulid.new())
+
+    artifact_refs_list: list[dict[str, Any]] = []
+    if phase == "complete" and artifact_pointer_value != "NA":
+        artifact_refs_list = artifact_refs or [
+            {
+                "location": artifact_location,
+                "pointer": artifact_pointer_value,
+                "mime": artifact_mime,
+                "checksum": artifact_checksum,
+                "size_bytes": artifact_size_bytes,
+            }
+        ]
 
     receipt_data = {
         "schema_version": "1.0",
@@ -161,6 +174,7 @@ async def emit_plan_receipt(
             "workers_used": list(set(
                 s.worker_id for s in plan.steps if s.worker_id
             )) if plan else [],
+            "artifact_refs": artifact_refs_list,
         },
     }
 

@@ -252,6 +252,7 @@ async def _handle_tool(
         if response.status == "plan_created" and response.plan:
             plan = response.plan
             plan.metadata.plan_id = plan_id
+            plan_stored = False
             try:
                 insert_sql = text(
                     """
@@ -284,22 +285,24 @@ async def _handle_tool(
                     },
                 )
                 await session.commit()
+                plan_stored = True
             except Exception:
                 await session.rollback()
 
-            try:
-                await emit_plan_receipt(
-                    tenant_id=settings.default_tenant_id,
-                    plan=plan,
-                    request=request,
-                    created_at=created_at,
-                    phase="complete",
-                    status="success",
-                    caused_by_receipt_id=accepted_receipt_id or "NA",
-                    artifact_pointer=f"delegate://plans/{plan_id}",
-                )
-            except Exception:
-                pass
+            if plan_stored:
+                try:
+                    await emit_plan_receipt(
+                        tenant_id=settings.default_tenant_id,
+                        plan=plan,
+                        request=request,
+                        created_at=created_at,
+                        phase="complete",
+                        status="success",
+                        caused_by_receipt_id=accepted_receipt_id or "NA",
+                        artifact_pointer=f"delegate://plans/{plan_id}",
+                    )
+                except Exception:
+                    pass
 
         elif response.status == "requires_escalation":
             try:
