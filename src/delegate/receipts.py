@@ -120,6 +120,15 @@ async def emit_plan_receipt(
             }
         ]
 
+    body_payload = {
+        "intent": request.intent.content,
+        "steps": plan_steps,
+        "confidence": plan_confidence,
+        "scope": plan_scope,
+        "artifact_pointer": artifact_pointer_value if phase == "complete" else None,
+        "artifact_refs": artifact_refs_list or None,
+    }
+
     receipt_data = {
         "schema_version": "1.0",
         "tenant_id": tenant_id,
@@ -162,6 +171,8 @@ async def emit_plan_receipt(
         "escalation_reason": "NA",
         "escalation_to": "NA",
         "retry_requested": False,
+        "body": body_payload,
+        "artifact_refs": artifact_refs_list,
         "created_at": created_at.isoformat(),
         "stored_at": None,
         "started_at": None,
@@ -202,6 +213,12 @@ async def emit_escalation_receipt(
     """
     receipt_id = str(ulid.new())
 
+    body_payload = {
+        "reason": reason,
+        "message": message,
+        "context": context,
+    }
+
     receipt_data = {
         "schema_version": "1.0",
         "tenant_id": tenant_id,
@@ -240,6 +257,8 @@ async def emit_escalation_receipt(
         "escalation_reason": message,
         "escalation_to": "principal",
         "retry_requested": False,
+        "body": body_payload,
+        "artifact_refs": [],
         "created_at": created_at.isoformat(),
         "stored_at": None,
         "started_at": None,
