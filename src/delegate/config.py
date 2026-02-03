@@ -134,7 +134,7 @@ class Settings(BaseSettings):
     )
     api_key: str = Field(
         default="",
-        description="API key for REST endpoint authentication"
+        description="API key for MCP endpoint authentication"
     )
 
     # Multi-tenancy
