@@ -16,12 +16,12 @@ import ulid
 
 def generate_plan_id() -> str:
     """Generate a new plan ID using ULID"""
-    return f"plan-{ulid.ULID()}"
+    return f"plan-{ulid.new()}"
 
 
 def generate_step_id() -> str:
     """Generate a new step ID using ULID"""
-    return f"step-{ulid.ULID()}"
+    return f"step-{ulid.new()}"
 
 
 # =============================================================================
