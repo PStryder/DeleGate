@@ -6,6 +6,7 @@ Plan creation, worker registry, and trust models per SPEC-DG-0000.
 from datetime import datetime
 from enum import Enum, IntEnum
 from typing import Any, Optional
+from uuid import uuid4
 from pydantic import BaseModel, Field, field_validator, model_validator
 import ulid
 
@@ -16,12 +17,29 @@ import ulid
 
 def generate_plan_id() -> str:
     """Generate a new plan ID using ULID"""
-    return f"plan-{ulid.new()}"
+    return f"plan-{_new_id()}"
 
 
 def generate_step_id() -> str:
     """Generate a new step ID using ULID"""
-    return f"step-{ulid.new()}"
+    return f"step-{_new_id()}"
+
+
+def _new_id() -> str:
+    """Generate a ULID-compatible identifier across ulid package variants."""
+    new_fn = getattr(ulid, "new", None)
+    if callable(new_fn):
+        return str(new_fn())
+
+    ulid_cls = getattr(ulid, "ULID", None)
+    if ulid_cls is not None:
+        try:
+            return str(ulid_cls())
+        except TypeError:
+            pass
+
+    # Fallback keeps IDs unique even if ULID APIs are unavailable in runtime.
+    return uuid4().hex
 
 
 # =============================================================================
