@@ -109,7 +109,7 @@ async def emit_plan_receipt(
         if status == "NA":
             status = "success"
 
-    receipt_id = receipt_id or str(ulid.new())
+    receipt_id = receipt_id or str(ulid.ULID())
 
     artifact_refs_list: list[dict[str, Any]] = []
     if phase == "complete" and artifact_pointer_value != "NA":
@@ -214,7 +214,7 @@ async def emit_escalation_receipt(
 
     Per SPEC-DG-0000: DeleGate MAY emit plan_escalated receipt when escalation occurs.
     """
-    receipt_id = str(ulid.new())
+    receipt_id = str(ulid.ULID())
 
     body_payload = {
         "reason": reason,

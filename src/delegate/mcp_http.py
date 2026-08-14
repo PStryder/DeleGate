@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import json
 from datetime import datetime
 from typing import Any
@@ -30,6 +32,7 @@ from delegate.models import (
 )
 from delegate.planner import Planner, validate_plan
 from delegate.receipts import emit_escalation_receipt, emit_plan_receipt, get_retry_queue_size
+from delegate.dispatcher import build_dispatcher
 from delegate.registry import get_registry, WorkerRegistry
 
 
@@ -123,6 +126,8 @@ MCP_TOOLS = [
     },
 ]
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/mcp", tags=["mcp"])
 
@@ -266,6 +271,7 @@ async def _handle_tool(
         )
 
         accepted_receipt_id: str | None = None
+        dispatch_summary: dict[str, Any] | None = None
         plan_id = generate_plan_id()
         accepted_at = datetime.utcnow()
         try:
@@ -293,7 +299,7 @@ async def _handle_tool(
                     """
                     INSERT INTO plans (
                         plan_id, tenant_id, delegate_id, intent_summary,
-                        scope, confidence, steps, references,
+                        scope, confidence, steps, "references",
                         trust_policy, assumptions, created_at, status
                     ) VALUES (
                         :plan_id, :tenant_id, :delegate_id, :intent_summary,
@@ -321,12 +327,17 @@ async def _handle_tool(
                 )
                 await session.commit()
                 plan_stored = True
-            except Exception:
+            except Exception as exc:
+                # Swallowing this silently meant plans were never persisted and
+                # nothing said so -- the plans table stayed empty while every
+                # request reported plan_created.
+                logger.error("plan_persist_failed plan_id=%s error=%s", plan_id, exc)
                 await session.rollback()
 
             if plan_stored:
+                complete_receipt_id: str | None = None
                 try:
-                    await emit_plan_receipt(
+                    complete_receipt_id = await emit_plan_receipt(
                         tenant_id=settings.default_tenant_id,
                         plan=plan,
                         request=request,
@@ -336,8 +347,51 @@ async def _handle_tool(
                         caused_by_receipt_id=accepted_receipt_id or "NA",
                         artifact_pointer=f"delegate://plans/{plan_id}",
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Also silent before: without the complete receipt there is
+                    # nothing for downstream obligations to name as their cause.
+                    logger.error("plan_complete_receipt_failed plan_id=%s error=%s", plan_id, exc)
+
+                # A plan that stays inside DeleGate is a document. Minting the
+                # obligations is what makes it a plan, and it is DeleGate's to
+                # do -- it is one of only two things that may mint, and minting
+                # is not executing. Dispatch happens after the complete receipt
+                # so every task can name it as its cause.
+                dispatcher = build_dispatcher(settings)
+                if dispatcher.enabled and complete_receipt_id:
+                    dispatch = await dispatcher.dispatch_plan(
+                        # PlanStep carries step_type/tool_name/parameters rather
+                        # than a free-text description, so build one from what
+                        # it does. Only executable steps become obligations:
+                        # wait_for and escalate are control flow, not work.
+                        steps=[
+                            {
+                                "description": (
+                                    step.parameters.get("description")
+                                    or step.tool_name
+                                    or step.aggregation_instruction
+                                    or f"{step.step_type.value} step"
+                                ),
+                                "task_type": step.step_type.value,
+                                "params": {
+                                    "step_id": step.step_id,
+                                    "worker_id": step.worker_id,
+                                    "tool_name": step.tool_name,
+                                    "parameters": step.parameters,
+                                    "depends_on": step.depends_on,
+                                },
+                            }
+                            for step in (plan.steps or [])
+                            if step.step_type.value in {"call_worker", "queue_execution"}
+                        ],
+                        principal_id=request.intent.principal_id
+                        if getattr(request.intent, "principal_id", None)
+                        else settings.default_tenant_id,
+                        plan_id=plan_id,
+                        plan_receipt_id=complete_receipt_id,
+                        intent=request.intent.content,
+                    )
+                    dispatch_summary = dispatch.as_dict()
 
         elif response.status == "requires_escalation":
             try:
@@ -351,7 +405,10 @@ async def _handle_tool(
             except Exception:
                 pass
 
-        return response.model_dump()
+        payload = response.model_dump()
+        if dispatch_summary is not None:
+            payload["dispatch"] = dispatch_summary
+        return payload
 
     if name == "delegate.validate_plan":
         request = ValidatePlanRequest(**arguments)

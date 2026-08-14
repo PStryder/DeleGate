@@ -162,6 +162,7 @@ class Settings(BaseSettings):
     # cognitive act; the heuristic planner remains the fallback because a
     # planning authority that cannot plan when a provider is down is worse
     # than one that plans coarsely. "stub" answers locally for testing.
+    asyncgate_tenant_id: str = Field(default="00000000-0000-0000-0000-000000000000", description="Tenant for minted AsyncGate obligations")
     ai_provider: str = Field(default="stub", description="Planning provider: stub | openrouter | none")
     ai_endpoint: str = Field(default="https://openrouter.ai/api/v1", description="OpenAI-compatible endpoint")
     ai_api_key: str | None = Field(default=None, description="Provider API key")
