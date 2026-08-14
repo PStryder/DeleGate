@@ -16,6 +16,7 @@ from delegate.database import init_database, close_database
 from delegate.registry import init_registry
 from delegate.receipts import retry_worker, stop_retry_worker
 from delegate.config import get_settings
+from delegate.metagate_client import acknowledge_startup, bootstrap_from_metagate
 
 # Configure logging
 logging.basicConfig(
@@ -29,6 +30,13 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     settings = get_settings()
+
+    # Resolve peer endpoints from MetaGate before anything that uses them.
+    # Best-effort by design: a failure must never prevent startup, or the
+    # bootstrap authority becomes a hidden master.
+    _bootstrap = await bootstrap_from_metagate(settings)
+    if _bootstrap is not None and _bootstrap.succeeded:
+        await acknowledge_startup(settings, _bootstrap)
 
     # Initialize database
     init_database()
