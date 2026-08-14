@@ -24,15 +24,18 @@ logger = logging.getLogger(__name__)
 try:
     from legivellum.models import Receipt as CanonicalReceipt
 except ImportError:
-    shared_root = Path(__file__).resolve().parents[4] / "LegiVellum" / "shared"
-    if shared_root.exists():
-        sys.path.append(str(shared_root))
-        try:
-            from legivellum.models import Receipt as CanonicalReceipt
-        except ImportError:
-            CanonicalReceipt = None
-    else:
-        CanonicalReceipt = None
+    # Walk real ancestors rather than indexing a fixed depth: parents[4] raises
+    # IndexError when the module sits shallower (e.g. inside a container).
+    CanonicalReceipt = None
+    for parent in Path(__file__).resolve().parents:
+        shared_root = parent / "LegiVellum" / "shared"
+        if shared_root.exists():
+            sys.path.append(str(shared_root))
+            try:
+                from legivellum.models import Receipt as CanonicalReceipt
+            except ImportError:
+                CanonicalReceipt = None
+            break
 
 # In-memory retry queue (production: use Redis or database)
 _retry_queue: deque = deque(maxlen=1000)
