@@ -157,6 +157,18 @@ class Settings(BaseSettings):
     metagate_component_key: str = Field(default="delegate", description="Component key presented at bootstrap")
     metagate_bootstrap_timeout_seconds: float = Field(default=5.0, description="Bootstrap request timeout")
 
+
+    # Cognitive planning. DeleGate turns intent into obligations, which is a
+    # cognitive act; the heuristic planner remains the fallback because a
+    # planning authority that cannot plan when a provider is down is worse
+    # than one that plans coarsely. "stub" answers locally for testing.
+    ai_provider: str = Field(default="stub", description="Planning provider: stub | openrouter | none")
+    ai_endpoint: str = Field(default="https://openrouter.ai/api/v1", description="OpenAI-compatible endpoint")
+    ai_api_key: str | None = Field(default=None, description="Provider API key")
+    ai_model: str = Field(default="anthropic/claude-sonnet-4-20250514", description="Planning model")
+    ai_max_tokens: int = Field(default=2048, description="Max tokens for a plan")
+    ai_timeout_seconds: float = Field(default=30.0, description="Planning request timeout")
+
     @field_validator("database_url")
     @classmethod
     def validate_database_url(cls, v: str) -> str:

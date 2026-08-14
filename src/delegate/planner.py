@@ -33,6 +33,7 @@ from delegate.models import (
 )
 from delegate.registry import WorkerRegistry, get_registry
 from delegate.config import get_settings, get_instance_id
+from delegate.ai_planner import PlanningUnavailable, build_planner
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,9 @@ class Planner:
     def __init__(self, registry: Optional[WorkerRegistry] = None):
         self.registry = registry or get_registry()
         self.settings = get_settings()
+        # Decomposition is a cognitive act. None means the cognitive path is
+        # disabled and the heuristic planner is used directly.
+        self.ai_planner = build_planner(self.settings)
 
     async def create_plan(self, request: PlanRequest) -> PlanResponse:
         """
@@ -410,7 +414,9 @@ class Planner:
         intent = request.intent.content
 
         # Split intent into subtasks
-        subtasks = self._split_into_subtasks(intent, task_type)
+        subtasks = await self._ai_subtasks(intent, task_type) or self._split_into_subtasks(
+            intent, task_type
+        )
 
         steps = []
         execution_step_ids = []
@@ -509,12 +515,36 @@ class Planner:
             references=self._build_references(request),
         )
 
+    async def _ai_subtasks(self, intent: str, task_type: str) -> Optional[list[dict[str, Any]]]:
+        """Decompose intent with the configured provider, or return None.
+
+        Never raises: planning sits on the request path, and a planning
+        authority that cannot plan when a provider is unreachable is worse than
+        one that plans coarsely. A failure here falls back to the heuristic
+        splitter rather than failing the request.
+        """
+        if self.ai_planner is None:
+            return None
+        try:
+            result = await self.ai_planner.plan(intent, task_type=task_type)
+        except PlanningUnavailable as exc:
+            logger.warning("cognitive_planning_unavailable falling back: %s", exc)
+            return None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cognitive_planning_failed falling back: %s", exc)
+            return None
+        logger.info(
+            "cognitive_plan_produced steps=%d scope=%s confidence=%.2f",
+            len(result["steps"]), result["scope"], result["confidence"],
+        )
+        return result["steps"]
+
     def _split_into_subtasks(
         self,
         intent: str,
         task_type: str,
     ) -> list[dict[str, Any]]:
-        """Split a complex intent into subtasks"""
+        """Split a complex intent into subtasks (heuristic fallback)."""
         intent_lower = intent.lower()
 
         # Check for explicit conjunctions
