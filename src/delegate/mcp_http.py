@@ -57,67 +57,67 @@ MCP_TOOLS = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "create_delegation_plan",
+        "name": "delegate.create_delegation_plan",
         "description": "Create plan from intent",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "validate_plan",
+        "name": "delegate.validate_plan",
         "description": "Validate a plan structure",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "get_plan",
+        "name": "delegate.get_plan",
         "description": "Get a plan by ID",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "list_plans",
+        "name": "delegate.list_plans",
         "description": "List plans with optional filtering",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "analyze_intent",
+        "name": "delegate.analyze_intent",
         "description": "Analyze intent without creating a plan",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "register_worker",
+        "name": "delegate.register_worker",
         "description": "Register worker with capabilities",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "search_workers",
+        "name": "delegate.search_workers",
         "description": "Search workers by capability",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "match_workers",
+        "name": "delegate.match_workers",
         "description": "Match workers to intent",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "list_workers",
+        "name": "delegate.list_workers",
         "description": "List registered workers",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "worker_status",
+        "name": "delegate.worker_status",
         "description": "Get worker status by ID",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "delete_worker",
+        "name": "delegate.delete_worker",
         "description": "Remove a worker from registry",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "stats",
+        "name": "delegate.stats",
         "description": "Registry and planning statistics",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
-        "name": "cache_clear",
+        "name": "delegate.cache_clear",
         "description": "Clear registry cache (admin)",
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -181,6 +181,39 @@ def _row_to_plan_dict(row) -> dict:
     }
 
 
+# Tools were originally exposed unprefixed, which docs/canonical/mcp.naming.md
+# forbids: service-owned tools MUST be namespaced, and section 3 fixes this
+# service's prefix as `delegate.*`. (The Problemata *primitive type* is
+# `delegategate` per problemata.spec.md -- a different namespace, deliberately.)
+# Canonical names are what tools/list advertises; bare forms are still accepted
+# so existing callers keep working.
+_LEGACY_TOOL_ALIASES = {
+    "create_delegation_plan",
+    "validate_plan",
+    "get_plan",
+    "list_plans",
+    "analyze_intent",
+    "register_worker",
+    "search_workers",
+    "match_workers",
+    "list_workers",
+    "worker_status",
+    "stats",
+    "cache_clear",
+    "delete_worker",
+}
+
+
+def _canonical_tool_name(name: str) -> str:
+    """Map a legacy unprefixed tool name onto its canonical form."""
+    if name in _LEGACY_TOOL_ALIASES:
+        return f"delegate.{name}"
+    if name == "delegategate.health":
+        # Historic alias for this service's health tool.
+        return "delegate.health"
+    return name
+
+
 async def _handle_tool(
     name: str,
     arguments: dict[str, Any],
@@ -189,7 +222,9 @@ async def _handle_tool(
 ) -> dict[str, Any]:
     settings = get_settings()
 
-    if name in {"delegate.health", "delegategate.health"}:
+    name = _canonical_tool_name(name)
+
+    if name == "delegate.health":
         return {
             "status": "healthy",
             "service": "DeleGate",
@@ -197,7 +232,7 @@ async def _handle_tool(
             "instance_id": settings.instance_id,
         }
 
-    if name == "create_delegation_plan":
+    if name == "delegate.create_delegation_plan":
         intent = arguments.get("intent", "")
         context_memorygate_refs = arguments.get("context_memorygate_refs") or []
         context_asyncgate_refs = arguments.get("context_asyncgate_refs") or []
@@ -318,12 +353,12 @@ async def _handle_tool(
 
         return response.model_dump()
 
-    if name == "validate_plan":
+    if name == "delegate.validate_plan":
         request = ValidatePlanRequest(**arguments)
         is_valid, errors, warnings = validate_plan(request.plan)
         return {"valid": is_valid, "errors": errors, "warnings": warnings}
 
-    if name == "get_plan":
+    if name == "delegate.get_plan":
         plan_id = arguments.get("plan_id")
         if not plan_id:
             raise ValueError("plan_id is required")
@@ -342,7 +377,7 @@ async def _handle_tool(
             raise ValueError("Plan not found")
         return _row_to_plan_dict(row)
 
-    if name == "list_plans":
+    if name == "delegate.list_plans":
         limit = int(arguments.get("limit", 20))
         status_filter = arguments.get("status")
         conditions = ["tenant_id = :tenant_id"]
@@ -363,7 +398,7 @@ async def _handle_tool(
         rows = result.mappings().all()
         return {"count": len(rows), "plans": [_row_to_plan_dict(row) for row in rows]}
 
-    if name == "analyze_intent":
+    if name == "delegate.analyze_intent":
         from delegate.planner import detect_task_type, estimate_complexity, detect_scope
 
         intent = arguments.get("intent", "")
@@ -387,7 +422,7 @@ async def _handle_tool(
             "worker_count": len(workers),
         }
 
-    if name == "register_worker":
+    if name == "delegate.register_worker":
         manifest = WorkerManifest(**arguments)
         registered = await registry.register(manifest)
         return {
@@ -397,7 +432,7 @@ async def _handle_tool(
             "trust_tier": (registered.trust.verified_tier or registered.trust.declared_tier).name.lower(),
         }
 
-    if name == "search_workers":
+    if name == "delegate.search_workers":
         request = WorkerSearchRequest(**arguments)
         results = await registry.search(
             request.query,
@@ -406,7 +441,7 @@ async def _handle_tool(
         )
         return {"count": len(results), "workers": [r.model_dump() for r in results]}
 
-    if name == "match_workers":
+    if name == "delegate.match_workers":
         request = WorkerMatchRequest(**arguments)
         results = await registry.match_intent(
             request.intent,
@@ -415,7 +450,7 @@ async def _handle_tool(
         )
         return {"count": len(results), "matches": [m.model_dump() for m in results]}
 
-    if name == "list_workers":
+    if name == "delegate.list_workers":
         workers = await registry.list_all()
         return {
             "count": len(workers),
@@ -432,7 +467,7 @@ async def _handle_tool(
             ],
         }
 
-    if name == "worker_status":
+    if name == "delegate.worker_status":
         worker_id = arguments.get("worker_id")
         if not worker_id:
             raise ValueError("worker_id is required")
@@ -447,7 +482,7 @@ async def _handle_tool(
             "last_seen": manifest.last_seen,
         }
 
-    if name == "delete_worker":
+    if name == "delegate.delete_worker":
         worker_id = arguments.get("worker_id")
         if not worker_id:
             raise ValueError("worker_id is required")
@@ -456,7 +491,7 @@ async def _handle_tool(
             raise ValueError("Worker not found")
         return {"deleted": True}
 
-    if name == "stats":
+    if name == "delegate.stats":
         registry_stats = registry.get_stats()
         try:
             query = text(
@@ -477,7 +512,7 @@ async def _handle_tool(
             "receipt_retry_queue": get_retry_queue_size(),
         }
 
-    if name == "cache_clear":
+    if name == "delegate.cache_clear":
         await registry.clear_cache()
         return {"cleared": True}
 
