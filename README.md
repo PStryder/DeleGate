@@ -17,35 +17,51 @@ See: `SPEC-DG-0000.txt` for complete specification.
 # Install dependencies
 pip install -e ".[dev]"
 
-# Set environment variables
+# Set environment variables. Ports below match the demo stack in
+# LegiVellum/problemata_demo, which is the only place these services run
+# together with fixed ports.
 export DELEGATE_DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/delegate"
-export DELEGATE_RECEIPTGATE_URL="http://localhost:8003"
+export DELEGATE_RECEIPTGATE_URL="http://localhost:8300"
 export DELEGATE_RECEIPTGATE_API_KEY="dg_your-secret-api-key-here"
-export DELEGATE_MEMORYGATE_URL="http://localhost:8001"  # deprecated
-export DELEGATE_ASYNCGATE_URL="http://localhost:8002"
+export DELEGATE_ASYNCGATE_URL="http://localhost:8400"
+export DELEGATE_COGNIGATE_ENDPOINT="http://localhost:8500"   # if AI_PROVIDER=cognigate
+export DELEGATE_MEMORYGATE_URL="http://localhost:8001"       # deprecated
 
 # Run database migrations
 alembic upgrade head
 
 # Start the server
 python -m delegate.main
-
 ```
+
+DeleGate itself listens on `DELEGATE_PORT` (default `8000`), and is published on
+`8700` in the demo stack.
 
 ## Project Structure
 
 ```
 src/delegate/
-- __init__.py      # Package exports
-- models.py        # Pydantic models (Plan, Steps, Workers, Trust)
-- config.py        # Configuration via environment
-- database.py      # PostgreSQL async connection
-- registry.py      # Worker registry with capability matching
-- planner.py       # Plan generation logic
-- receipts.py      # ReceiptGate receipt emission
-- mcp_http.py      # MCP HTTP JSON-RPC interface
-- main.py          # Application entry point
+- __init__.py         # Package exports
+- models.py           # Pydantic models (Plan, Steps, Workers, Trust)
+- config.py           # Configuration via environment
+- database.py         # PostgreSQL async connection
+- auth.py             # API key authentication
+- registry.py         # Worker registry with capability matching
+- planner.py          # Plan generation: classification and the three builders
+- ai_planner.py       # Where cognition comes from (CogniGate, OpenRouter, stub)
+- dispatcher.py       # Mints AsyncGate obligations from an approved plan
+- receipts.py         # ReceiptGate receipt emission
+- metagate_client.py  # MetaGate bootstrap
+- mcp_http.py         # MCP HTTP JSON-RPC interface
+- mcp_server.py       # MCP tool definitions and dispatch
+- main.py             # Application entry point
 ```
+
+`planner.py` decides *what* the plan is; `ai_planner.py` decides *where the
+thinking comes from*; `dispatcher.py` turns the result into obligations. Those
+are deliberately three files: minting is an authority DeleGate holds and
+executing is one it does not, so the boundary is easier to keep honest when the
+minting code is not tangled into the planning code.
 
 ## Core Doctrine
 
