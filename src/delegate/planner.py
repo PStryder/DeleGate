@@ -38,6 +38,17 @@ from delegate.ai_planner import PlanningUnavailable, build_planner
 logger = logging.getLogger(__name__)
 
 
+class CognitionUnavailable(RuntimeError):
+    """Cognition was expected for this plan and could not be reached.
+
+    Distinct from PlanningUnavailable, which reports that one provider call
+    failed. This says the failure is not being papered over: under
+    planning_fallback=escalate it travels up to create_plan and becomes an
+    escalation, which DeleGate's README treats as a first-class output --
+    "Plan OR Escalation (cannot plan)".
+    """
+
+
 # =============================================================================
 # Intent Analysis
 # =============================================================================
@@ -247,6 +258,30 @@ class Planner:
                 ),
             )
 
+        except CognitionUnavailable as e:
+            # Not a planning error: DeleGate declines to invent a plan it could
+            # not think through. Reported as its own reason so an operator can
+            # tell "cognition is down" from "the planner broke".
+            logger.warning("planning_escalated_cognition_unavailable: %s", e)
+
+            if request.planning_options.allow_escalation:
+                return self._escalation_response(
+                    reason=EscalationReason.RESOURCE_UNAVAILABLE,
+                    message=f"Cognition unavailable, refusing to plan heuristically: {e}",
+                    suggested_actions=[
+                        "Check CogniGate availability",
+                        "Set DELEGATE_PLANNING_FALLBACK=heuristic to accept a coarse plan",
+                        "Retry once cognition is restored",
+                    ],
+                    context={"error": str(e), "planning_fallback": self.settings.planning_fallback},
+                )
+            return PlanResponse(
+                status="planning_failed",
+                error_code="COGNITION_UNAVAILABLE",
+                message=str(e),
+                suggestions=["Restore cognition, or allow heuristic fallback"],
+            )
+
         except Exception as e:
             logger.error(f"Planning failed: {e}", exc_info=True)
 
@@ -282,6 +317,28 @@ class Planner:
         manifest = await self.registry.get(worker.worker_id)
 
         steps = []
+        assumptions = [f"Worker {worker.worker_id} can handle {task_type}"]
+
+        # A simple plan is one step by definition, so cognition cannot change
+        # its shape here -- it refines what that step says. If cognition comes
+        # back with several steps, the heuristic classifier that labelled this
+        # "simple" disagrees with the thing that actually read the intent, and
+        # that disagreement is recorded rather than resolved silently in either
+        # direction.
+        subtasks = await self._ai_subtasks(intent, task_type, "simple")
+        if subtasks:
+            step_intent = subtasks[0].get("description") or intent
+            if len(subtasks) > 1:
+                logger.info(
+                    "cognition_disagrees_with_scope classified=simple steps=%d",
+                    len(subtasks),
+                )
+                assumptions.append(
+                    f"Classified simple, but cognition proposed {len(subtasks)} "
+                    f"steps; only the first is planned here"
+                )
+        else:
+            step_intent = intent
 
         # Determine if we should use sync or async
         prefer_sync = request.planning_options.prefer_sync
@@ -294,7 +351,7 @@ class Planner:
             step_type=step_type,
             worker_id=worker.worker_id,
             tool_name=tool_name,
-            parameters={"intent": intent},
+            parameters={"intent": step_intent},
             trust=manifest.trust if manifest else worker.trust,
             output_binding="result",
             timeout_seconds=300 if step_type == StepType.QUEUE_EXECUTION else None,
@@ -323,9 +380,7 @@ class Planner:
                 scope=scope,
                 confidence=0.9,
                 trust_policy=request.planning_options.trust_policy,
-                assumptions=[
-                    f"Worker {worker.worker_id} can handle {task_type}",
-                ],
+                assumptions=assumptions,
             ),
             steps=steps,
             references=self._build_references(request),
@@ -347,41 +402,54 @@ class Planner:
         steps = []
         step_ids = []
 
-        # Step 1: Queue primary task
-        step1_id = generate_step_id()
-        step_ids.append(step1_id)
-        steps.append(PlanStep(
-            step_id=step1_id,
-            step_type=StepType.QUEUE_EXECUTION,
-            worker_id=worker.worker_id,
-            tool_name=tool_name,
-            parameters={"intent": intent},
-            trust=manifest.trust if manifest else worker.trust,
-            output_binding="primary_result",
-            timeout_seconds=300,
-        ))
+        # When cognition is wired to this scope it decides what the queued work
+        # actually is. Without it the intent is queued whole, which is the
+        # heuristic behaviour: one opaque task the worker has to interpret.
+        subtasks = await self._ai_subtasks(intent, task_type, "medium")
+        queued = subtasks or [{"description": intent, "task_type": task_type}]
 
-        # Step 2: Wait for completion
-        step2_id = generate_step_id()
+        # Step 1..N: Queue the work
+        for subtask in queued:
+            step_id = generate_step_id()
+            step_ids.append(step_id)
+            steps.append(PlanStep(
+                step_id=step_id,
+                step_type=StepType.QUEUE_EXECUTION,
+                worker_id=worker.worker_id,
+                tool_name=subtask.get("task_type") if subtasks else tool_name,
+                parameters={
+                    "intent": subtask.get("description", intent),
+                    **({"params": subtask["params"]} if subtask.get("params") else {}),
+                },
+                trust=manifest.trust if manifest else worker.trust,
+                output_binding=f"result_{len(step_ids)}",
+                timeout_seconds=300,
+            ))
+
+        # Step N+1: Wait for all of them
+        wait_id = generate_step_id()
         steps.append(PlanStep(
-            step_id=step2_id,
+            step_id=wait_id,
             step_type=StepType.WAIT_FOR,
-            depends_on=[step1_id],
-            wait_conditions=[WaitCondition(
-                type=WaitConditionType.TASK_COMPLETION,
-                task_id="${" + step1_id + ".output.task_id}",
-            )],
+            depends_on=list(step_ids),
+            wait_conditions=[
+                WaitCondition(
+                    type=WaitConditionType.TASK_COMPLETION,
+                    task_id="${" + step_id + ".output.task_id}",
+                )
+                for step_id in step_ids
+            ],
             timeout_seconds=600,
             output_binding="wait_result",
         ))
 
-        # Step 3: Aggregate results
-        step3_id = generate_step_id()
+        # Step N+2: Aggregate results
+        aggregate_id = generate_step_id()
         steps.append(PlanStep(
-            step_id=step3_id,
+            step_id=aggregate_id,
             step_type=StepType.AGGREGATE,
-            depends_on=[step2_id],
-            inputs=["${" + step1_id + ".output}"],
+            depends_on=[wait_id],
+            inputs=["${" + step_id + ".output}" for step_id in step_ids],
             aggregation_instruction="Summarize and validate the results",
             output_binding="summary",
         ))
@@ -414,9 +482,9 @@ class Planner:
         intent = request.intent.content
 
         # Split intent into subtasks
-        subtasks = await self._ai_subtasks(intent, task_type) or self._split_into_subtasks(
-            intent, task_type
-        )
+        subtasks = await self._ai_subtasks(
+            intent, task_type, "complex"
+        ) or self._split_into_subtasks(intent, task_type)
 
         steps = []
         execution_step_ids = []
@@ -515,29 +583,63 @@ class Planner:
             references=self._build_references(request),
         )
 
-    async def _ai_subtasks(self, intent: str, task_type: str) -> Optional[list[dict[str, Any]]]:
-        """Decompose intent with the configured provider, or return None.
+    def _cognition_enabled_for(self, complexity: str) -> bool:
+        """Whether this scope should consult cognition.
 
-        Never raises: planning sits on the request path, and a planning
-        authority that cannot plan when a provider is unreachable is worse than
-        one that plans coarsely. A failure here falls back to the heuristic
-        splitter rather than failing the request.
+        Two separate reasons to skip it, and they are not the same thing: the
+        provider can be switched off entirely (ai_provider=none), or cognition
+        can be on but not wired to this scope. Neither is a failure, so neither
+        escalates -- nothing was promised.
         """
         if self.ai_planner is None:
+            return False
+        return complexity in self.settings.cognition_scope_set()
+
+    async def _ai_subtasks(
+        self, intent: str, task_type: str, complexity: str
+    ) -> Optional[list[dict[str, Any]]]:
+        """Decompose intent with the configured provider.
+
+        Returns None when the caller should use the heuristic splitter, either
+        because cognition is not wired to this scope or because it failed and
+        planning_fallback allows a coarse plan.
+
+        Raises CognitionUnavailable when cognition was expected and could not
+        be reached under planning_fallback=escalate. That is the default,
+        because a heuristic plan is structurally indistinguishable from a
+        reasoned one: substituting it silently tells the caller a decomposition
+        was thought through when it was produced by splitting on " and ".
+        """
+        if not self._cognition_enabled_for(complexity):
             return None
         try:
             result = await self.ai_planner.plan(intent, task_type=task_type)
         except PlanningUnavailable as exc:
-            logger.warning("cognitive_planning_unavailable falling back: %s", exc)
-            return None
+            return self._handle_cognition_failure(exc, complexity)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("cognitive_planning_failed falling back: %s", exc)
-            return None
+            return self._handle_cognition_failure(exc, complexity)
         logger.info(
             "cognitive_plan_produced steps=%d scope=%s confidence=%.2f",
             len(result["steps"]), result["scope"], result["confidence"],
         )
         return result["steps"]
+
+    def _handle_cognition_failure(
+        self, exc: Exception, complexity: str
+    ) -> Optional[list[dict[str, Any]]]:
+        """Apply planning_fallback to a cognition failure."""
+        if self.settings.planning_fallback == "heuristic":
+            logger.warning(
+                "cognitive_planning_unavailable scope=%s falling back to "
+                "heuristic: %s",
+                complexity, exc,
+            )
+            return None
+        logger.warning(
+            "cognitive_planning_unavailable scope=%s escalating: %s",
+            complexity, exc,
+        )
+        raise CognitionUnavailable(str(exc)) from exc
 
     def _split_into_subtasks(
         self,

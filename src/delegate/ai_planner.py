@@ -216,6 +216,115 @@ class StubAIPlanner(AIPlanner):
         )
 
 
+class CogniGatePlanner(AIPlanner):
+    """Sources the decomposition from CogniGate instead of a raw model.
+
+    CogniGate is the primitive that owns bounded cognition: it plans under an
+    instruction profile, which is the difference between asking a model what it
+    thinks and asking a component that has been told what it may think about.
+    Routing through it means DeleGate does not carry a second, unbounded AI
+    client, and one component owns how cognition is bounded.
+
+    The authority split is unchanged and load-bearing. CogniGate returns a plan
+    *document*; DeleGate remains the only thing here that mints obligations
+    from it. cognigate.plan performs the planning phase and stops, so nothing
+    is executed by asking.
+
+    Only the network boundary is overridden. _parse and _normalize are
+    inherited, so a plan from CogniGate is validated exactly as a plan from any
+    other provider -- including being rejected for having no usable steps.
+    """
+
+    def __init__(
+        self,
+        *,
+        endpoint: str,
+        auth_token: Optional[str] = None,
+        profile: str = "default",
+        **kwargs: Any,
+    ) -> None:
+        kwargs.setdefault("api_key", None)
+        kwargs.setdefault("model", "cognigate/plan")
+        super().__init__(endpoint=endpoint, **kwargs)
+        self.auth_token = auth_token
+        self.profile = profile
+
+    @property
+    def _mcp_url(self) -> str:
+        return self.endpoint if self.endpoint.endswith("/mcp") else f"{self.endpoint}/mcp"
+
+    async def plan(self, intent: str, *, task_type: str = "general") -> dict[str, Any]:
+        """Ask CogniGate to decompose the intent.
+
+        Overrides plan() rather than _chat() because CogniGate returns
+        structured steps directly; there is no chat completion to parse. The
+        result is still put through _normalize so every provider converges on
+        one step shape.
+        """
+        headers = {"Content-Type": "application/json"}
+        if self.auth_token:
+            headers["Authorization"] = f"Bearer {self.auth_token}"
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    self._mcp_url,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "cognigate.plan",
+                            "arguments": {
+                                "intent": intent,
+                                "task_type": task_type,
+                                "profile": self.profile,
+                            },
+                        },
+                    },
+                    headers=headers,
+                )
+                response.raise_for_status()
+                body = response.json()
+        except Exception as exc:  # noqa: BLE001 - any transport failure is unavailability
+            raise PlanningUnavailable(f"cognigate.plan call failed: {exc}") from exc
+
+        if "error" in body:
+            raise PlanningUnavailable(f"cognigate.plan returned an error: {body['error']}")
+        result = body.get("result")
+        if not isinstance(result, dict):
+            raise PlanningUnavailable("cognigate.plan returned no result")
+
+        if result.get("is_stub"):
+            # Canned output must never pass for reasoning without saying so.
+            logger.warning(
+                "cognigate_planner_stub_response intent=%r: CogniGate is "
+                "running a stub provider, so this plan involved no reasoning",
+                intent[:80],
+            )
+
+        steps = result.get("steps") or []
+        # CogniGate's step shape is its own; map it onto the planner's before
+        # normalizing, so _normalize stays the single definition of valid.
+        mapped = [
+            {
+                "description": step.get("description"),
+                "task_type": step.get("tool_name") or task_type,
+                "rationale": step.get("instructions"),
+            }
+            for step in steps
+            if isinstance(step, dict)
+        ]
+        return self._normalize(
+            {
+                "steps": mapped,
+                "scope": result.get("scope") or "medium",
+                "confidence": result.get("confidence", 0.7),
+            },
+            intent,
+        )
+
+
 def build_planner(settings: Any) -> Optional[AIPlanner]:
     """Return a planner for the configured provider, or None if disabled."""
     provider = (getattr(settings, "ai_provider", "") or "").lower()
@@ -228,6 +337,19 @@ def build_planner(settings: Any) -> Optional[AIPlanner]:
     }
     if provider == "stub":
         return StubAIPlanner(**common)
+    if provider == "cognigate":
+        endpoint = getattr(settings, "cognigate_endpoint", "") or ""
+        if not endpoint:
+            raise ValueError(
+                "ai_provider=cognigate requires cognigate_endpoint to be set"
+            )
+        return CogniGatePlanner(
+            endpoint=endpoint.rstrip("/"),
+            auth_token=getattr(settings, "cognigate_auth_token", None),
+            profile=getattr(settings, "cognigate_profile", "default"),
+            max_tokens=common["max_tokens"],
+            timeout_seconds=common["timeout_seconds"],
+        )
     return AIPlanner(
         endpoint=getattr(settings, "ai_endpoint", "https://openrouter.ai/api/v1"),
         api_key=getattr(settings, "ai_api_key", None),

@@ -170,6 +170,68 @@ class Settings(BaseSettings):
     ai_max_tokens: int = Field(default=2048, description="Max tokens for a plan")
     ai_timeout_seconds: float = Field(default=30.0, description="Planning request timeout")
 
+    # Sourcing cognition from CogniGate rather than a raw model endpoint.
+    # CogniGate is the primitive that owns bounded cognition -- it plans under
+    # an instruction profile, with the prompt discipline that implies -- so
+    # ai_provider=cognigate asks it for the decomposition instead of DeleGate
+    # holding a second, unbounded AI client of its own.
+    cognigate_endpoint: str = Field(default="", description="CogniGate MCP endpoint")
+    cognigate_auth_token: str | None = Field(default=None, description="Auth token for CogniGate")
+    cognigate_profile: str = Field(default="default", description="Instruction profile to plan under")
+
+    # Which classified scopes consult cognition. The classifier runs first and
+    # heuristically labels an intent simple/medium/complex, so this bounds how
+    # much of the request path pays for a model call. "all" or a comma-
+    # separated subset of simple,medium,complex; "none" disables cognition.
+    cognition_scopes: str = Field(
+        default="all",
+        description="Scopes that use cognition: all | none | subset of simple,medium,complex",
+    )
+
+    # What to do when cognition is unavailable. DeleGate's README makes
+    # Escalation a first-class output -- "Plan OR Escalation (cannot plan)" --
+    # so refusing to plan is a legitimate result rather than a failure, and it
+    # is the default: a heuristic plan is structurally indistinguishable from a
+    # reasoned one, so silently substituting it hides that no thinking happened.
+    planning_fallback: str = Field(
+        default="escalate",
+        description="When cognition is unavailable: escalate | heuristic",
+    )
+
+    @field_validator("planning_fallback")
+    @classmethod
+    def validate_planning_fallback(cls, v: str) -> str:
+        allowed = {"escalate", "heuristic"}
+        value = (v or "").strip().lower()
+        if value not in allowed:
+            raise ValueError(f"planning_fallback must be one of {sorted(allowed)}")
+        return value
+
+    @field_validator("cognition_scopes")
+    @classmethod
+    def validate_cognition_scopes(cls, v: str) -> str:
+        value = (v or "").strip().lower()
+        if value in {"all", "none", ""}:
+            return value or "none"
+        allowed = {"simple", "medium", "complex"}
+        parts = {p.strip() for p in value.split(",") if p.strip()}
+        unknown = parts - allowed
+        if unknown:
+            raise ValueError(
+                f"cognition_scopes contains unknown scopes: {sorted(unknown)}; "
+                f"allowed are {sorted(allowed)}, or 'all'/'none'"
+            )
+        return ",".join(sorted(parts))
+
+    def cognition_scope_set(self) -> set[str]:
+        """The scopes that should consult cognition."""
+        value = self.cognition_scopes
+        if value == "all":
+            return {"simple", "medium", "complex"}
+        if value == "none":
+            return set()
+        return {p for p in value.split(",") if p}
+
     @field_validator("database_url")
     @classmethod
     def validate_database_url(cls, v: str) -> str:

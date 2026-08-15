@@ -153,9 +153,8 @@ class TestFallbackBehaviour:
         with pytest.raises(PlanningUnavailable):
             await planner.plan("something")
 
-    @pytest.mark.asyncio
-    async def test_planner_falls_back_to_heuristic(self, monkeypatch):
-        """The Planner degrades rather than failing when cognition is down."""
+    @staticmethod
+    def _planner_with_failing_cognition(monkeypatch, *, fallback: str):
         from delegate.planner import Planner
 
         planner = Planner()
@@ -163,17 +162,47 @@ class TestFallbackBehaviour:
         async def _fail(*args, **kwargs):
             raise PlanningUnavailable("provider down")
 
-        if planner.ai_planner is not None:
-            monkeypatch.setattr(planner.ai_planner, "plan", _fail)
-        assert await planner._ai_subtasks("a and b", "general") is None
+        if planner.ai_planner is None:
+            pytest.skip("cognition disabled in this configuration")
+        monkeypatch.setattr(planner.ai_planner, "plan", _fail)
+        monkeypatch.setattr(planner.settings, "planning_fallback", fallback)
+        monkeypatch.setattr(planner.settings, "cognition_scopes", "all")
+        return planner
+
+    @pytest.mark.asyncio
+    async def test_unreachable_cognition_escalates_by_default(self, monkeypatch):
+        """The default refuses to substitute a heuristic plan silently.
+
+        A regex-split plan is structurally identical to a reasoned one, so
+        handing one back without saying so claims thinking that did not happen.
+        """
+        from delegate.planner import CognitionUnavailable
+
+        planner = self._planner_with_failing_cognition(monkeypatch, fallback="escalate")
+        with pytest.raises(CognitionUnavailable):
+            await planner._ai_subtasks("a and b", "general", "complex")
+
+    @pytest.mark.asyncio
+    async def test_heuristic_fallback_degrades_when_configured(self, monkeypatch):
+        planner = self._planner_with_failing_cognition(monkeypatch, fallback="heuristic")
+        assert await planner._ai_subtasks("a and b", "general", "complex") is None
 
     @pytest.mark.asyncio
     async def test_disabled_cognition_returns_none(self, monkeypatch):
+        """Provider off is not a failure: nothing was promised, so no escalation."""
         from delegate.planner import Planner
 
         planner = Planner()
         monkeypatch.setattr(planner, "ai_planner", None)
-        assert await planner._ai_subtasks("anything", "general") is None
+        monkeypatch.setattr(planner.settings, "planning_fallback", "escalate")
+        assert await planner._ai_subtasks("anything", "general", "complex") is None
+
+    @pytest.mark.asyncio
+    async def test_scope_not_wired_to_cognition_returns_none(self, monkeypatch):
+        """Same reasoning: this scope was never configured to think."""
+        planner = self._planner_with_failing_cognition(monkeypatch, fallback="escalate")
+        monkeypatch.setattr(planner.settings, "cognition_scopes", "complex")
+        assert await planner._ai_subtasks("anything", "general", "simple") is None
 
 
 @pytest.mark.asyncio
