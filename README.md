@@ -164,6 +164,96 @@ Neither a disabled provider (`none`) nor a scope outside
 `DELEGATE_COGNITION_SCOPES` escalates. Nothing was promised in those cases, so
 nothing failed; the heuristic splitter is used directly.
 
+## Configuration
+
+Environment variables (prefix `DELEGATE_`). Generated from the `Settings`
+class; MetaGate bootstrap variables are documented in their own section below.
+
+`DELEGATE_API_KEY` is **required** unless `DELEGATE_ALLOW_INSECURE_DEV=true`; startup fails without it.
+
+See `.env.example` for a working starting point.
+
+### Server
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DELEGATE_DEBUG` | `false` | Enable debug logging |
+| `DELEGATE_HOST` | `0.0.0.0` | Server bind address |
+| `DELEGATE_INSTANCE_ID` | `delegate-1` | Instance identifier for this DeleGate |
+| `DELEGATE_PORT` | `8000` | Server port |
+| `DELEGATE_RELOAD` | `false` | Enable hot reload (dev only) |
+
+### Database
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DELEGATE_DATABASE_URL` | `postgresql+asyncpg://postgres:postgres@localhost:5432/delegate` | PostgreSQL connection URL |
+| `DELEGATE_SQL_ECHO` | `false` | Echo SQL queries |
+
+### Authentication
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DELEGATE_ALLOW_INSECURE_DEV` | `false` | Allow unauthenticated access (dev only) |
+| `DELEGATE_API_KEY` | *(empty)* | API key for MCP endpoint authentication |
+| `DELEGATE_DEFAULT_TENANT_ID` | `default` | Default tenant ID for unauthenticated requests |
+
+### Upstream services
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DELEGATE_ASYNCGATE_TENANT_ID` | `00000000-0000-0000-0000-000000000000` | Tenant for minted AsyncGate obligations |
+| `DELEGATE_ASYNCGATE_URL` | `http://localhost:8002` | AsyncGate MCP endpoint for async task execution |
+| `DELEGATE_COGNIGATE_AUTH_TOKEN` | *(unset)* | Auth token for CogniGate |
+| `DELEGATE_COGNIGATE_ENDPOINT` | *(empty)* | CogniGate MCP endpoint |
+| `DELEGATE_COGNIGATE_PROFILE` | `default` | Instruction profile to plan under |
+| `DELEGATE_MEMORYGATE_URL` | *(empty)* | Deprecated: MemoryGate URL (use receiptgate_url) |
+| `DELEGATE_RECEIPTGATE_API_KEY` | *(empty)* | ReceiptGate API key for receipt emission |
+| `DELEGATE_RECEIPTGATE_URL` | `http://localhost:8003` | ReceiptGate MCP endpoint for receipt emission |
+
+### AI and cognition
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DELEGATE_AI_API_KEY` | *(unset)* | Provider API key |
+| `DELEGATE_AI_ENDPOINT` | `https://openrouter.ai/api/v1` | OpenAI-compatible endpoint |
+| `DELEGATE_AI_MAX_TOKENS` | `2048` | Max tokens for a plan |
+| `DELEGATE_AI_MODEL` | `anthropic/claude-sonnet-4-20250514` | Planning model |
+| `DELEGATE_AI_PROVIDER` | `stub` | Planning provider: stub | openrouter | none |
+| `DELEGATE_AI_TIMEOUT_SECONDS` | `30.0` | Planning request timeout |
+| `DELEGATE_COGNITION_SCOPES` | `all` | Scopes that use cognition: all | none | subset of simple,medium,complex |
+| `DELEGATE_PLANNING_FALLBACK` | `escalate` | When cognition is unavailable: escalate | heuristic |
+
+### Rate limiting
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DELEGATE_RATE_LIMIT_ENABLED` | `true` | Enable rate limiting |
+| `DELEGATE_RATE_LIMIT_REQUESTS_PER_MINUTE` | `200` | Rate limit per minute |
+
+### CORS
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DELEGATE_CORS_ALLOW_CREDENTIALS` | `true` | Allow credentials in CORS requests |
+| `DELEGATE_CORS_ALLOWED_HEADERS` | `['Authorization', 'Content-Type', 'X-Tenant-ID']` | Allowed request headers |
+| `DELEGATE_CORS_ALLOWED_METHODS` | `['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']` | Allowed HTTP methods |
+| `DELEGATE_CORS_ALLOWED_ORIGINS` | `['http://localhost:3000', 'http://localhost:8080']` | Allowed CORS origins (explicit allowlist for security) |
+
+### Behaviour and limits
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DELEGATE_ALLOW_UNTRUSTED_WORKERS` | `false` | Enable untrusted worker registration |
+| `DELEGATE_CAPABILITY_CACHE_TTL_SECONDS` | `600` | Worker capability cache TTL |
+| `DELEGATE_DEFAULT_TRUST_TIER` | `verified` | Minimum trust tier if not specified (untrusted, sandbox, verified, trusted) |
+| `DELEGATE_ENABLE_METRICS` | `false` | Enable Prometheus metrics |
+| `DELEGATE_MAX_PLAN_STEPS` | `20` | Maximum steps per Plan |
+| `DELEGATE_METRICS_PORT` | `9090` | Prometheus metrics port |
+| `DELEGATE_PLANNING_TIMEOUT_SECONDS` | `30` | Max time for Plan generation |
+| `DELEGATE_REQUIRE_SIGNATURES_PRODUCTION` | `false` | Require cryptographic signatures in production |
+| `DELEGATE_WORKER_HEALTH_CHECK_INTERVAL_SECONDS` | `60` | Interval for worker health checks |
+
 ## Testing
 
 ```bash
