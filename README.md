@@ -91,11 +91,28 @@ Trust tiers:
 
 ## MCP Tools
 
-- `create_delegation_plan` - Create plan from intent
-- `analyze_intent` - Analyze intent without creating plan
-- `register_worker` - Register worker with capabilities
-- `search_workers` - Search workers by capability
-- `list_workers` - List all registered workers
+Names are namespaced `delegate.*` per `mcp.naming.md`. This list is the full
+surface reported by `tools/list`.
+
+Planning:
+- `delegate.create_delegation_plan` - Create plan from intent
+- `delegate.analyze_intent` - Analyze intent without creating a plan
+- `delegate.validate_plan` - Validate plan structure
+- `delegate.get_plan` - Retrieve a plan by id
+- `delegate.list_plans` - List stored plans
+
+Workers:
+- `delegate.register_worker` - Register worker with capabilities
+- `delegate.search_workers` - Search workers by capability
+- `delegate.match_workers` - Match workers to an intent
+- `delegate.list_workers` - List all registered workers
+- `delegate.worker_status` - Availability for one worker
+- `delegate.delete_worker` - Remove a worker from the registry
+
+Operations:
+- `delegate.health` - Health check
+- `delegate.stats` - Planning and registry counters
+- `delegate.cache_clear` - Drop cached worker matches
 
 ## MCP HTTP (JSON-RPC)
 
@@ -103,11 +120,75 @@ DeleGate exposes MCP over HTTP at `/mcp` with JSON-RPC methods:
 - `tools/list`
 - `tools/call`
 
+## Cognition
+
+Decomposing an intent is a cognitive act. DeleGate does not perform it inline:
+`DELEGATE_AI_PROVIDER` selects where the decomposition comes from.
+
+| Provider | Behaviour |
+|----------|-----------|
+| `cognigate` | Ask CogniGate via `cognigate.plan`. The primitive that owns bounded cognition plans under an instruction profile, and returns a plan document; DeleGate still mints the obligations. |
+| `openrouter` | Call an OpenAI-compatible endpoint directly. |
+| `stub` | Answer locally and deterministically, for tests and CI. No reasoning is performed. |
+| `none` | No cognition. Plans come from the heuristic splitter. |
+
+`cognigate.plan` runs CogniGate's planning phase and stops, so asking for a
+plan executes nothing. That matters here: DeleGate's invariant is that it never
+executes work, and calling `cognigate.execute_job` instead would have CogniGate
+performing the work while DeleGate believed it was still deciding what the work
+is.
+
+### Configuration
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DELEGATE_AI_PROVIDER` | `stub` | Where cognition comes from (table above) |
+| `DELEGATE_COGNIGATE_ENDPOINT` | *(unset)* | CogniGate MCP endpoint. Required when the provider is `cognigate`; startup fails without it rather than failing on the first request. |
+| `DELEGATE_COGNIGATE_AUTH_TOKEN` | *(unset)* | Bearer token for CogniGate |
+| `DELEGATE_COGNIGATE_PROFILE` | `default` | Instruction profile to plan under |
+| `DELEGATE_COGNITION_SCOPES` | `all` | Which classified scopes consult cognition: `all`, `none`, or a subset of `simple,medium,complex` |
+| `DELEGATE_PLANNING_FALLBACK` | `escalate` | What to do when cognition is unreachable: `escalate` or `heuristic` |
+
+### When cognition is unavailable
+
+The default is to escalate rather than plan anyway. A heuristic plan produced
+by splitting on `" and "` is structurally indistinguishable from a reasoned
+one, so substituting it silently would claim thinking that did not happen.
+Escalation is a first-class output here — the contract is **Plan OR Escalation
+(cannot plan)** — and the response carries reason `resource_unavailable`.
+
+Set `DELEGATE_PLANNING_FALLBACK=heuristic` to degrade quietly instead, which is
+appropriate where availability matters more than plan quality.
+
+Neither a disabled provider (`none`) nor a scope outside
+`DELEGATE_COGNITION_SCOPES` escalates. Nothing was promised in those cases, so
+nothing failed; the heuristic splitter is used directly.
+
 ## Testing
 
 ```bash
 pytest tests/ -v
 ```
+
+## MetaGate Bootstrap
+
+On startup this gate asks MetaGate for the topology it belongs to and fills in
+endpoints the operator did not configure. It resolves: `receiptgate` → `receiptgate_url`, `memorygate` → `memorygate_url`, `asyncgate` → `asyncgate_url`.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `DELEGATE_METAGATE_ENDPOINT` | *(unset)* | MetaGate MCP endpoint. Unset disables bootstrap; the gate starts on configured values alone. |
+| `DELEGATE_METAGATE_API_KEY` | *(unset)* | Credential presented to MetaGate |
+| `DELEGATE_METAGATE_COMPONENT_KEY` | `delegate` | Which component in the manifest this process is |
+| `DELEGATE_METAGATE_BOOTSTRAP_TIMEOUT_SECONDS` | `5.0` | Per-call timeout |
+
+Bootstrap never prevents startup. Every failure — unreachable, timeout, auth
+rejected, no binding, malformed packet — degrades to a logged warning and
+"carry on with configured values", because a bootstrap authority that can take
+the mesh down would be a hidden master. Explicit configuration always wins;
+bootstrap fills gaps and logs when the mesh disagrees rather than overriding.
+
+See `LegiVellum/docs/canonical/metagate.bootstrap.md` for the full contract.
 
 ## License
 
