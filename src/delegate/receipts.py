@@ -21,21 +21,15 @@ from delegate.config import get_receiptgate_url, get_receiptgate_api_key
 
 logger = logging.getLogger(__name__)
 
-try:
-    from legivellum.models import Receipt as CanonicalReceipt
-except ImportError:
-    # Walk real ancestors rather than indexing a fixed depth: parents[4] raises
-    # IndexError when the module sits shallower (e.g. inside a container).
-    CanonicalReceipt = None
-    for parent in Path(__file__).resolve().parents:
-        shared_root = parent / "LegiVellum" / "shared"
-        if shared_root.exists():
-            sys.path.append(str(shared_root))
-            try:
-                from legivellum.models import Receipt as CanonicalReceipt
-            except ImportError:
-                CanonicalReceipt = None
-            break
+# The canonical receipt model is a hard dependency, imported unguarded.
+#
+# This was a parent-directory walk wrapped in `except ImportError`, which found
+# LegiVellum/shared in a checkout and nothing in a container. DeleGate happened
+# to be the one emitter where the import succeeded -- it pinned python-ulid for
+# an unrelated reason and got the demo mount -- so it validated its receipts by
+# accident. That is not a property to rely on.
+from legivellum.models import Receipt as CanonicalReceipt
+from legivellum.ulid import derive_ulid
 
 # In-memory retry queue (production: use Redis or database)
 _retry_queue: deque = deque(maxlen=1000)
@@ -137,6 +131,9 @@ async def emit_plan_receipt(
         "tenant_id": tenant_id,
         "receipt_id": receipt_id,
         "task_id": resolved_plan_id,
+        # One plan is one planning obligation: accepted when planning is taken
+        # on, complete when the plan exists.
+        "obligation_id": derive_ulid("delegate.plan", resolved_plan_id),
         "parent_task_id": "NA",
         "caused_by_receipt_id": caused_by_receipt_id,
         "dedupe_key": "NA",
@@ -227,6 +224,9 @@ async def emit_escalation_receipt(
         "tenant_id": tenant_id,
         "receipt_id": receipt_id,
         "task_id": f"escalation-{receipt_id}",
+        # An escalation is a distinct responsibility from the plan that could
+        # not be produced, so it carries its own obligation id.
+        "obligation_id": derive_ulid("delegate.escalation", receipt_id),
         "parent_task_id": "NA",
         "caused_by_receipt_id": "NA",
         "dedupe_key": "NA",
