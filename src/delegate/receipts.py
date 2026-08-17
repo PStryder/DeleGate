@@ -350,9 +350,17 @@ async def emit_receipt_with_retry(
             )
 
         except Exception as e:
+            # The reason goes in the message, not only in `extra`. A refusal
+            # carried solely in `extra` is invisible under the default
+            # formatter, so an operator saw "Unexpected error emitting receipt"
+            # with no way to learn that the ledger had rejected the transition
+            # or why -- and a refused receipt is the one case where the reason
+            # is the entire content of the event.
             logger.error(
-                f"Unexpected error emitting receipt",
-                extra={"receipt_id": receipt_id, "error": str(e)}
+                "Unexpected error emitting receipt %s: %s",
+                receipt_id,
+                e,
+                extra={"receipt_id": receipt_id, "error": str(e)},
             )
 
         if attempt < max_retries - 1:
